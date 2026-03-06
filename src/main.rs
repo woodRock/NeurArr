@@ -288,7 +288,11 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                             for s in 1..=seasons {
                                 if let Ok(eps) = scheduler_tmdb.get_tv_season(show.tmdb_id as u32, s).await {
                                     for ep in eps {
-                                        let aired = ep.air_date.as_ref().map(|d| d <= &chrono::Utc::now().date_naive().to_string()).unwrap_or(false);
+                                        let aired = if let Some(d) = &ep.air_date {
+                                            if d.is_empty() { false }
+                                            else { d <= &chrono::Utc::now().date_naive().to_string() }
+                                        } else { false };
+                                        
                                         if aired {
                                             let _ = db::insert_episode(&scheduler_pool, show.id, ep.season_number, ep.episode_number, &ep.name, ep.air_date, "wanted").await;
                                         }
@@ -360,11 +364,24 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                         info!("String match confirmed for: {}", best.title);
                                         true
                                     } else {
-                                        match scheduler_ollama.verify_torrent_match(&show.title, &best.title).await {
-                                            Ok(v) => v,
-                                            Err(e) => {
-                                                error!("LLM verification error: {}", e);
-                                                false
+                                        // Before asking LLM, check if there's at least some word overlap
+                                        // to avoid asking about completely unrelated shows.
+                                        let target_words: std::collections::HashSet<_> = target_norm.split_whitespace()
+                                            .filter(|w| w.len() > 2) // Ignore tiny words like 'a', 'of', 'the'
+                                            .collect();
+                                        let torrent_words: std::collections::HashSet<_> = torrent_norm.split_whitespace().collect();
+                                        let has_overlap = target_words.iter().any(|w| torrent_words.contains(w));
+
+                                        if !has_overlap {
+                                            info!("No word overlap for: {}. Skipping LLM.", best.title);
+                                            false
+                                        } else {
+                                            match scheduler_ollama.verify_torrent_match(&show.title, &best.title).await {
+                                                Ok(v) => v,
+                                                Err(e) => {
+                                                    error!("LLM verification error: {}", e);
+                                                    false
+                                                }
                                             }
                                         }
                                     };
