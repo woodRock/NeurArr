@@ -560,6 +560,12 @@ async fn search_media(State(state): State<AppState>, Query(params): Query<Search
     for m in &mut movies { m.media_type = Some("movie".to_string()); }
     for t in &mut tv { t.media_type = Some("tv".to_string()); }
     movies.append(&mut tv);
+
+    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
+        let tracked_ids: std::collections::HashSet<_> = tracked.into_iter().map(|s| s.tmdb_id as i64).collect();
+        movies.retain(|m| !tracked_ids.contains(&(m.id as i64)));
+    }
+
     Json(movies)
 }
 
@@ -574,13 +580,29 @@ async fn semantic_search(State(state): State<AppState>, Json(req): Json<Semantic
         info!("Semantic Search identified titles: '{}'", titles_str);
         let mut all_results = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
+
+        let tracked_ids = if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
+            tracked.into_iter().map(|s| s.tmdb_id as i64).collect::<std::collections::HashSet<_>>()
+        } else {
+            std::collections::HashSet::new()
+        };
+
         for title in titles_str.split(',') {
             let t = title.trim();
             if t.is_empty() { continue; }
             let movies = state.tmdb.search_movie(t, None).await.unwrap_or_default();
             let tv = state.tmdb.search_tv(t, None).await.unwrap_or_default();
-            if let Some(mut m) = movies.into_iter().next() { if seen_ids.insert(m.id) { m.media_type = Some("movie".to_string()); all_results.push(m); } }
-            if let Some(mut t) = tv.into_iter().next() { if seen_ids.insert(t.id) { t.media_type = Some("tv".to_string()); all_results.push(t); } }
+            
+            if let Some(mut m) = movies.into_iter().next() { 
+                if !tracked_ids.contains(&(m.id as i64)) && seen_ids.insert(m.id) { 
+                    m.media_type = Some("movie".to_string()); all_results.push(m); 
+                } 
+            }
+            if let Some(mut t) = tv.into_iter().next() { 
+                if !tracked_ids.contains(&(t.id as i64)) && seen_ids.insert(t.id) { 
+                    t.media_type = Some("tv".to_string()); all_results.push(t); 
+                } 
+            }
         }
         return Json(all_results);
     }
@@ -593,6 +615,12 @@ async fn get_upcoming(State(state): State<AppState>) -> Json<Vec<crate::integrat
     for m in &mut results { m.media_type = Some("movie".to_string()); }
     for t in &mut tv { t.media_type = Some("tv".to_string()); }
     results.append(&mut tv);
+
+    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
+        let tracked_ids: std::collections::HashSet<_> = tracked.into_iter().map(|s| s.tmdb_id as i64).collect();
+        results.retain(|m| !tracked_ids.contains(&(m.id as i64)));
+    }
+
     Json(results)
 }
 
@@ -745,6 +773,12 @@ async fn search_by_genre(State(state): State<AppState>, Query(params): Query<Gen
                 for mut m in json.results { m.media_type = Some("movie".to_string()); results.push(m); }
             }
         }
+
+        if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
+            let tracked_ids: std::collections::HashSet<_> = tracked.into_iter().map(|s| s.tmdb_id as i64).collect();
+            results.retain(|m| !tracked_ids.contains(&(m.id as i64)));
+        }
+
         return Json(results);
     }
     Json(vec![])
@@ -907,15 +941,17 @@ async fn rate_item(State(state): State<AppState>, Path(id): Path<i64>, Json(req)
 
 async fn get_recommendations(State(state): State<AppState>) -> Json<Vec<crate::integrations::tmdb::TmdbMedia>> {
     let mut recs = Vec::new();
-    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
-        let mut seed_items = tracked.clone();
-        seed_items.sort_by(|a, b| b.rating.cmp(&a.rating));
-        for item in seed_items.iter().take(3) {
-            if item.media_type == "movie" { if let Ok(results) = state.tmdb.get_movie_recommendations(item.tmdb_id as u32).await { for mut m in results { m.media_type = Some("movie".to_string()); recs.push(m); } } }
-            else { if let Ok(results) = state.tmdb.get_tv_recommendations(item.tmdb_id as u32).await { for mut m in results { m.media_type = Some("tv".to_string()); recs.push(m); } } }
-        }
+    let tracked_shows = db::get_tracked_shows(&state.pool).await.unwrap_or_default();
+    let tracked_ids: std::collections::HashSet<_> = tracked_shows.iter().map(|s| s.tmdb_id as i64).collect();
+
+    let mut seed_items = tracked_shows.clone();
+    seed_items.sort_by(|a, b| b.rating.cmp(&a.rating));
+    for item in seed_items.iter().take(3) {
+        if item.media_type == "movie" { if let Ok(results) = state.tmdb.get_movie_recommendations(item.tmdb_id as u32).await { for mut m in results { m.media_type = Some("movie".to_string()); recs.push(m); } } }
+        else { if let Ok(results) = state.tmdb.get_tv_recommendations(item.tmdb_id as u32).await { for mut m in results { m.media_type = Some("tv".to_string()); recs.push(m); } } }
     }
-    let mut seen = std::collections::HashSet::new(); recs.retain(|m| seen.insert(m.id));
+    let mut seen = std::collections::HashSet::new(); 
+    recs.retain(|m| seen.insert(m.id) && !tracked_ids.contains(&(m.id as i64)));
     Json(recs.into_iter().take(20).collect())
 }
 
