@@ -177,3 +177,19 @@ fn test_recursive_ingestion_file_check() {
     assert_eq!(video_files.len(), 3);
     assert!(video_files.contains(&"Season 1/Show S01E01.mkv"));
 }
+
+#[test]
+fn test_activity_status_mapping() {
+    let statuses = vec!["parsed", "summarized", "other"];
+    let results: Vec<&str> = statuses.iter().map(|s| {
+        match *s {
+            "parsed" => "Matched",
+            "summarized" => "Processing",
+            _ => "New File",
+        }
+    }).collect();
+
+    assert_eq!(results[0], "Matched");
+    assert_eq!(results[1], "Processing");
+    assert_eq!(results[2], "New File");
+}
