@@ -24,6 +24,12 @@ use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use walkdir::WalkDir;
 
+use tray_icon::{TrayIconBuilder, TrayIconEvent};
+use muda::{MenuEvent, Menu, MenuItem, PredefinedMenuItem};
+use tao::event_loop::{EventLoopBuilder, ControlFlow};
+use image::Rgba;
+use open;
+
 #[derive(ClapParser)]
 #[command(name = "neurarr")]
 #[command(about = "Privacy-first AI media management daemon", long_about = None)]
@@ -66,8 +72,23 @@ impl tracing::field::Visit for LogVisitor {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn load_icon() -> Option<tray_icon::Icon> {
+    let mut img = image::RgbaImage::new(32, 32);
+    for x in 0..32 {
+        for y in 0..32 {
+            let dx = x as f32 - 16.0;
+            let dy = y as f32 - 16.0;
+            if dx*dx + dy*dy < 200.0 {
+                img.put_pixel(x, y, Rgba([56, 189, 248, 255]));
+            }
+        }
+    }
+    let (width, height) = img.dimensions();
+    let rgba = img.into_raw();
+    tray_icon::Icon::from_rgba(rgba, width, height).ok()
+}
+
+fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
     let (log_tx, _) = broadcast::channel(100);
@@ -84,30 +105,107 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Setup) => {
-            info!("NeurArr Setup Mode");
-            let pool = init_db().await?;
-            if db::get_user_hash(&pool, "admin").await?.is_none() {
-                info!("Creating default admin user (password: admin)");
-                let hash = crate::utils::auth::hash_password("admin");
-                db::create_user(&pool, "admin", &hash).await?;
-            }
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                info!("NeurArr Setup Mode");
+                let pool = init_db().await?;
+                if db::get_user_hash(&pool, "admin").await?.is_none() {
+                    info!("Creating default admin user (password: admin)");
+                    let hash = crate::utils::auth::hash_password("admin");
+                    db::create_user(&pool, "admin", &hash).await?;
+                }
+                Ok::<(), anyhow::Error>(())
+            })?;
             return Ok(());
         }
         Some(Commands::Update) => {
-            update_app().await?;
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async { update_app().await })?;
             return Ok(());
         }
         Some(Commands::Scan) => {
-            let pool = init_db().await?;
-            scan_library(pool).await?;
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                let pool = init_db().await?;
+                scan_library(pool).await
+            })?;
             return Ok(());
         }
         _ => {
-            run_daemon(log_tx).await?;
+            let event_loop = EventLoopBuilder::new().build();
+
+            let menu = Menu::new();
+            let open_i = MenuItem::new("Open NeurArr", true, None);
+            let settings_i = MenuItem::new("Settings", true, None);
+            let logs_i = MenuItem::new("View Logs", true, None);
+            let update_i = MenuItem::new("Restart to Update", true, None);
+            let quit_i = MenuItem::new("Quit NeurArr", true, None);
+
+            menu.append_items(&[
+                &open_i,
+                &settings_i,
+                &logs_i,
+                &PredefinedMenuItem::separator(),
+                &update_i,
+                &PredefinedMenuItem::separator(),
+                &quit_i,
+            ]).unwrap();
+
+            let icon = load_icon().unwrap();
+
+            let mut tray_icon = Some(
+                TrayIconBuilder::new()
+                    .with_menu(Box::new(menu))
+                    .with_tooltip("NeurArr Pro")
+                    .with_icon(icon)
+                    .build()
+                    .unwrap(),
+            );
+
+            let menu_channel = MenuEvent::receiver();
+            let tray_channel = TrayIconEvent::receiver();
+
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Err(e) = run_daemon(log_tx).await {
+                        tracing::error!("Daemon error: {:?}", e);
+                    }
+                });
+            });
+
+            event_loop.run(move |_event, _, control_flow| {
+                *control_flow = ControlFlow::Wait;
+
+                if let Ok(event) = menu_channel.try_recv() {
+                    if event.id == open_i.id() {
+                        let _ = open::that("http://localhost:3000/");
+                    } else if event.id == settings_i.id() {
+                        let _ = open::that("http://localhost:3000/");
+                    } else if event.id == logs_i.id() {
+                        let _ = open::that("http://localhost:3000/");
+                    } else if event.id == update_i.id() {
+                        std::thread::spawn(|| {
+                            let rt = tokio::runtime::Runtime::new().unwrap();
+                            let _ = rt.block_on(async { update_app().await });
+                        });
+                    } else if event.id == quit_i.id() {
+                        tray_icon.take();
+                        *control_flow = ControlFlow::Exit;
+                    }
+                }
+
+                if let Ok(event) = tray_channel.try_recv() {
+                    match event {
+                        TrayIconEvent::Click { button: tray_icon::MouseButton::Left, .. } => {
+                            let _ = open::that("http://localhost:3000/");
+                        }
+                        _ => {}
+                    }
+                }
+            });
         }
     }
-
-    Ok(())
 }
 
 pub async fn scan_library(pool: sqlx::SqlitePool) -> Result<()> {
@@ -390,9 +488,26 @@ async fn update_app() -> Result<()> {
     info!("Starting NeurArr update process...");
     let status = std::process::Command::new("git").arg("pull").status()?;
     if status.success() {
-        info!("Successfully pulled latest changes. Restarting...");
-        std::process::Command::new("cargo").arg("build").arg("--release").status()?;
-        std::process::exit(0);
+        info!("Successfully pulled latest changes. Rebuilding...");
+        
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(current_exe) = std::env::current_exe() {
+                let old_exe = current_exe.with_extension("old.exe");
+                let _ = std::fs::remove_file(&old_exe);
+                let _ = std::fs::rename(&current_exe, &old_exe);
+            }
+        }
+
+        let build_status = std::process::Command::new("cargo").arg("build").arg("--release").status()?;
+        if build_status.success() {
+            info!("Build successful. Restarting...");
+            let current_exe = std::env::current_exe()?;
+            std::process::Command::new(current_exe).spawn()?;
+            std::process::exit(0);
+        } else {
+            anyhow::bail!("Build failed. Update aborted.");
+        }
     }
     Ok(())
 }

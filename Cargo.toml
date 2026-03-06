@@ -35,6 +35,11 @@ argon2 = "0.5"
 axum-extra = { version = "0.10", features = ["cookie"] }
 rand = "0.8"
 async-stream = "0.3.6"
+tray-icon = "0.21.3"
+muda = "0.17.1"
+tao = "0.34.6"
+image = "0.25.9"
+open = "5.3.3"
 
 
 [profile.release]
