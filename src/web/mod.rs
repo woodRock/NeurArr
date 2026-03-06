@@ -11,7 +11,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::net::SocketAddr;
-use std::sync::{Mutex as StdMutex, Arc};
+use std::sync::{Arc, Mutex as StdMutex};
 use tracing::info;
 use sysinfo::{System, Disks};
 
@@ -44,18 +44,12 @@ struct AppState {
 pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::Sender<String>) -> Result<()> {
     let tmdb = TmdbClient::new().unwrap_or_else(|_| {
         info!("TMDB client initialized in degraded mode (missing config)");
-        TmdbClient { 
-            client: reqwest::Client::new(), 
-            api_key: "MISSING".to_string() 
-        }
+        TmdbClient { client: reqwest::Client::new(), api_key: "MISSING".to_string() }
     });
-    
     let ollama = Arc::new(crate::llm::OllamaClient::new().unwrap_or_else(|_| {
         info!("Ollama client initialized in degraded mode (missing config)");
-        // Since OllamaClient is opaque, we rely on its own internal defaults
-        crate::llm::OllamaClient::new().unwrap() 
+        crate::llm::OllamaClient::new().unwrap()
     }));
-
     let mut sys = System::new_all();
     sys.refresh_all();
     let state = AppState { 
@@ -450,7 +444,10 @@ async fn dashboard() -> impl IntoResponse {
                 if (card) {
                     card.classList.add('border-emerald-500/50', 'shadow-[0_0_20px_rgba(16,185,129,0.1)]');
                     const btn = document.getElementById(`vote-up-${tmdbId}`);
-                    if (btn) btn.classList.replace('bg-emerald-600/80', 'bg-emerald-500');
+                    if (btn) {
+                        btn.classList.replace('bg-emerald-600/80', 'bg-emerald-500');
+                        btn.parentElement.classList.replace('opacity-0', 'opacity-100');
+                    }
                 }
             }
 
@@ -467,7 +464,7 @@ async fn dashboard() -> impl IntoResponse {
             if(data.length > 0) {
                 section.classList.remove('hidden');
                 document.getElementById('next-up-results').innerHTML = data.map(item => `
-                    <div class="glass p-5 rounded-3xl flex gap-5 items-center border border-white/5 hover:border-sky-500/40 transition-all duration-500 cursor-pointer group shadow-2xl" onclick="openEpisodeModal(${item.show_id}, '${item.show_title.replace(/'/g, "\\'")}')">
+                    <div class="glass p-5 rounded-3xl flex gap-5 items-center border border-white/5 hover:border-sky-500/40 transition-all duration-500 cursor-pointer group shadow-2xl" onclick="openItemDetails(${item.show_id}, '${item.show_title.replace(/'/g, "\\'")}')">
                         <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w200${item.poster_path}` : placeholder}" class="w-20 h-28 object-cover rounded-2xl shadow-2xl group-hover:scale-105 transition-transform">
                         <div class="flex-grow overflow-hidden">
                             <div class="text-[9px] font-black text-sky-500 uppercase tracking-[0.2em] mb-2">Continue Watching</div>
@@ -512,7 +509,7 @@ async fn dashboard() -> impl IntoResponse {
         async function sendBotMessage() { const input = document.getElementById('bot-input'); const message = input.value.trim(); if(!message) return; const container = document.getElementById('bot-messages'); container.innerHTML += `<div class="flex justify-end"><div class="bg-sky-600 text-white p-4 rounded-3xl rounded-tr-none text-xs font-medium leading-relaxed max-w-[85%] shadow-2xl">${message}</div></div>`; input.value = ''; container.scrollTop = container.scrollHeight; const res = await fetch('/api/bot/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }) }); const reply = await res.json(); container.innerHTML += `<div class="flex gap-3"><div class="w-8 h-8 bg-purple-500 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-black shadow-lg shadow-purple-900/20">NB</div><div class="glass p-5 rounded-3xl rounded-tl-none text-xs text-slate-300 leading-relaxed max-w-[85%] border border-white/5">${reply}</div></div>`; container.scrollTop = container.scrollHeight; }
         async function openEpisodeModal(id, title) { document.getElementById('episode-modal-title').innerText = title; document.getElementById('episodes-modal').classList.add('active'); fetchEpisodes(id); }
         function closeEpisodeModal() { document.getElementById('episodes-modal').classList.remove('active'); }
-        async function fetchEpisodes(id) { const res = await fetch(`/api/tracked/${id}/episodes`); const data = await res.json(); const showTitle = document.getElementById('episode-modal-title').innerText; const seasons = {}; data.forEach(ep => { if(!seasons[ep.season]) seasons[ep.season] = []; seasons[ep.season].push(ep); }); document.getElementById('episodes-list').innerHTML = Object.keys(seasons).map(s => `<div class="mb-8"><div class="flex justify-between items-center bg-white/5 p-4 rounded-2xl mb-4 border border-white/10"><div class="flex items-center gap-4"><h3 class="font-black text-sky-400 uppercase tracking-[0.2em] text-[10px]">Season ${s}</h3></div><div class="flex gap-2"><button onclick="bulkSetSeasonStatus(${id}, ${s}, 'wanted')" class="text-[8px] bg-sky-600/10 text-sky-400 px-3 py-1.5 rounded-lg font-black hover:bg-sky-600 hover:text-white transition-all uppercase tracking-widest">Wanted</button><button onclick="bulkSetSeasonStatus(${id}, ${s}, 'skipped')" class="text-[8px] bg-white/5 text-slate-500 px-3 py-1.5 rounded-lg font-black hover:bg-white/10 hover:text-white transition-all uppercase tracking-widest">Skip</button><button onclick="bulkSetSeasonStatus(${id}, ${s}, 'completed')" class="text-[8px] bg-emerald-600/10 text-emerald-500 px-3 py-1.5 rounded-lg font-black hover:bg-emerald-600 hover:text-white transition-all uppercase tracking-widest">Owned</button><button onclick="openInteractiveSearch('${showTitle.replace(/'/g, "\\'")}', null, id, 'S${s.toString().padStart(2,'0')}')" class="text-[8px] bg-amber-600/10 text-amber-400 px-3 py-1.5 rounded-lg font-black hover:bg-amber-600 hover:text-white transition-all uppercase tracking-widest">Search Pack</button></div></div><div class="grid grid-cols-1 gap-1 ml-10">${seasons[s].map(ep => `<div class="text-[10px] p-2.5 hover:bg-white/5 rounded-xl flex justify-between items-center transition-all duration-300"><span class="text-slate-300 font-medium"><b class="text-slate-600 mr-3 font-black">E${ep.episode}</b> ${ep.title || 'Episode ' + ep.episode}</span><div class="flex items-center gap-4"><span class="text-[8px] font-black uppercase tracking-widest ${ep.status === 'downloading' ? 'text-sky-400 animate-pulse' : (ep.status === 'completed' ? 'text-emerald-500' : 'text-slate-600')}">${ep.status}</span><button onclick="openInteractiveSearch('${showTitle.replace(/'/g, "\\'")}', ${ep.id}, null, 'S${ep.season.toString().padStart(2,'0')}E${ep.episode.toString().padStart(2,'0')}')" class="text-amber-500/40 hover:text-amber-400 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg></button></div></div>`).join('')}</div></div>`).join('') || '<div class="text-center text-slate-700 py-20 font-black uppercase tracking-widest text-xs">No episodes identified</div>'; }
+        async function fetchEpisodes(id) { const res = await fetch(`/api/tracked/${id}/episodes`); const data = await res.json(); const showTitle = document.getElementById('episode-modal-title').innerText; const seasons = {}; data.forEach(ep => { if(!seasons[ep.season]) seasons[ep.season] = []; seasons[ep.season].push(ep); }); document.getElementById('episodes-list').innerHTML = Object.keys(seasons).map(s => `<div class="mb-8"><div class="flex justify-between items-center bg-white/5 p-4 rounded-2xl mb-4 border border-white/10"><div class="flex items-center gap-4"><h3 class="font-black text-sky-400 uppercase tracking-[0.2em] text-[10px]">Season ${s}</h3></div><div class="flex gap-2"><button onclick="bulkSetSeasonStatus(${id}, ${s}, 'wanted')" class="text-[8px] bg-sky-600/10 text-sky-400 px-3 py-1.5 rounded-lg font-black hover:bg-sky-600 hover:text-white transition-all uppercase tracking-widest">Wanted</button><button onclick="bulkSetSeasonStatus(${id}, ${s}, 'skipped')" class="text-[8px] bg-white/5 text-slate-500 px-3 py-1.5 rounded-lg font-black hover:bg-white/10 hover:text-white transition-all uppercase tracking-widest">Skip</button><button onclick="bulkSetSeasonStatus(${id}, ${s}, 'completed')" class="text-[8px] bg-emerald-600/10 text-emerald-500 px-3 py-1.5 rounded-lg font-black hover:bg-emerald-600 hover:text-white transition-all uppercase tracking-widest">Owned</button><button onclick="openInteractiveSearch('${showTitle.replace(/'/g, "\\'")}', null, id, 'S${s.toString().padStart(2,'0')}')" class="text-[8px] bg-amber-600/10 text-amber-400 px-3 py-1.5 rounded-lg font-black hover:bg-amber-600 hover:text-white transition-all uppercase tracking-widest">Search Pack</button></div></div><div class="grid grid-cols-1 gap-1 ml-10">${seasons[s].map(ep => `<div class="text-[10px] p-2.5 hover:bg-white/5 rounded-xl flex justify-between items-center transition-all duration-300"><span class="text-slate-300 font-medium"><b class="text-slate-600 mr-3 font-black">E${ep.episode}</b> ${ep.title || 'Episode ' + ep.episode}</span><div class="flex items-center gap-4"><span class="text-[8px] font-black uppercase tracking-widest ${ep.status === 'downloading' ? 'text-sky-400 animate-pulse' : (ep.status === 'completed' ? 'text-emerald-500' : 'text-slate-600')}">${ep.status}</span><button onclick="openInteractiveSearch('${showTitle.replace(/'/g, "\\'")}', ${ep.id}, null, 'S${ep.season.toString().padStart(2,'0')}E${ep.episode.toString().padStart(2,'0')}')" class="text-amber-500/40 hover:text-amber-500 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg></button></div></div>`).join('')}</div></div>`).join('') || '<div class="text-center text-slate-700 py-20 font-black uppercase tracking-widest text-xs">No episodes identified</div>'; }
         async function bulkSetSeasonStatus(id, season, status) { await fetch(`/api/tracked/${id}/seasons/${season}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) }); fetchEpisodes(id); }
         async function markWatched(id) { await fetch(`/api/tracked/${id}/watched`, { method: 'POST' }); fetchTracked(); }
         async function markWanted(id) { await fetch(`/api/tracked/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'wanted' }) }); fetchTracked(); }
@@ -589,7 +586,7 @@ async fn dashboard() -> impl IntoResponse {
             performInteractiveSearch(); 
         }
         function closeInteractiveModal() { document.getElementById('interactive-modal').classList.remove('active'); }
-        async function performInteractiveSearch() { const query = document.getElementById('interactive-search-input').value; if(!query) return; document.getElementById('interactive-results').innerHTML = '<tr><td colspan="5" class="text-center py-10 text-slate-500 uppercase font-bold tracking-widest animate-pulse">Neural Index Query...</td></tr>'; const res = await fetch('/api/interactive-search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) }); const data = await res.json(); document.getElementById('interactive-results').innerHTML = data.length ? data.map(item => `<tr class="hover:bg-white/5 transition-colors text-[11px]"><td class="py-3 px-4 max-w-md"><div class="font-bold text-slate-200 truncate">${item.title}</div></td><td class="py-3 font-mono text-slate-400">${(item.size / 1024 / 1024 / 1024).toFixed(2)} GB</td><td class="py-3 text-center"><span class="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-500 font-black">${item.seeders}</span></td><td class="py-3 text-slate-500 italic">${item.indexer}</td><td class="py-3 pr-4 text-right"><button onclick="downloadTorrent('${item.link.replace(/'/g, "\\'")}', '${item.title.replace(/'/g, "\\'")}')" class="bg-sky-600 hover:bg-sky-500 text-white px-4 py-1.5 rounded-lg font-black text-[9px] uppercase transition-all shadow-lg shadow-sky-900/20">Download</button></td></tr>`).join('') : '<tr><td colspan="5" class="text-center py-20 text-rose-500 font-black uppercase tracking-widest">No matching clusters found</td></tr>'; }
+        async function performInteractiveSearch() { const query = document.getElementById('interactive-search-input').value; if(!query) return; document.getElementById('interactive-results').innerHTML = '<tr><td colspan="5" class="text-center py-10 text-slate-500 uppercase font-bold tracking-widest animate-pulse">Neural Index Query...</td></tr>'; const res = await fetch('/api/interactive-search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) }); const data = await res.json(); document.getElementById('interactive-results').innerHTML = data.length ? data.map(item => `<tr class="hover:bg-white/5 transition-colors text-[11px]"><td class="py-3 px-4 max-w-md"><div class="font-bold text-slate-200 truncate">${item.title}</div></td><td class="py-3 font-mono text-slate-400">${(item.size / 1024 / 1024 / 1024).toFixed(2)} GB</td><td class="py-3 text-center"><span class="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-500 font-black">${item.seeders}</span></td><td class="py-3 text-slate-500 italic">${item.indexer}</td><td class="py-3 pr-4 text-right"><button onclick="downloadTorrent('${item.link.replace(/'/g, "\\'")}', '${item.title.replace(/'/g, "\\'")}')" class="bg-sky-600 hover:bg-sky-500 text-white px-4 py-1.5 rounded-lg font-black text-[9px] uppercase transition-all shadow-lg shadow-sky-900/40">Download</button></td></tr>`).join('') : '<tr><td colspan="5" class="text-center py-20 text-rose-500 font-black uppercase tracking-widest">No matching clusters found</td></tr>'; }
         async function downloadTorrent(link, title) { 
             try {
                 const res = await fetch('/api/download-torrent', { 
@@ -929,14 +926,6 @@ async fn trigger_ingest(State(state): State<AppState>) -> Json<bool> {
     Json(false)
 }
 
-#[derive(Serialize)]
-struct ConfigItem {
-    key: String,
-    value: String,
-    label: String,
-    group: String,
-}
-
 async fn get_config() -> Json<Vec<ConfigItem>> {
     let keys = vec![
         ("TMDB_API_KEY", "TMDB API Key", "External Services"),
@@ -962,6 +951,9 @@ async fn get_config() -> Json<Vec<ConfigItem>> {
     }
     Json(config)
 }
+
+#[derive(Serialize)]
+struct ConfigItem { key: String, value: String, label: String, group: String }
 
 async fn update_config(Json(config): Json<std::collections::HashMap<String, String>>) -> Json<bool> {
     let mut env_content = tokio::fs::read_to_string(".env").await.unwrap_or_default();
@@ -1036,7 +1028,6 @@ async fn download_torrent(State(state): State<AppState>, Json(req): Json<Downloa
         }
         Ok::<(), anyhow::Error>(())
     }.await;
-
     Json(result.is_ok())
 }
 
@@ -1048,78 +1039,37 @@ struct RateRequest { rating: i64 }
 async fn rate_item(State(state): State<AppState>, Path(id): Path<i64>, Json(req): Json<RateRequest>) -> Json<bool> { let _ = db::update_tracked_show_info(&state.pool, id, None, None, Some(req.rating)).await; Json(true) }
 
 #[derive(Serialize)]
-struct RecommendationMedia {
-    #[serde(flatten)]
-    media: crate::integrations::tmdb::TmdbMedia,
-    vote: Option<i32>,
-}
+struct RecommendationMedia { #[serde(flatten)] media: crate::integrations::tmdb::TmdbMedia, vote: Option<i32> }
 
 async fn get_recommendations(State(state): State<AppState>) -> Json<Vec<RecommendationMedia>> {
     use rand::seq::SliceRandom;
-    
     let tracked_shows = db::get_tracked_shows(&state.pool).await.unwrap_or_default();
     let tracked_ids: std::collections::HashSet<_> = tracked_shows.iter().map(|s| s.tmdb_id as i64).collect();
     let disapproved = db::get_disapproved_ids(&state.pool).await.unwrap_or_default();
-    
-    let votes = sqlx::query("SELECT tmdb_id, vote FROM recommendation_feedback")
-        .fetch_all(&state.pool)
-        .await
-        .unwrap_or_default();
+    let votes = sqlx::query("SELECT tmdb_id, vote FROM recommendation_feedback").fetch_all(&state.pool).await.unwrap_or_default();
     use sqlx::Row;
     let vote_map: std::collections::HashMap<i64, i32> = votes.into_iter().map(|r| (r.get::<i64, _>(0), r.get::<i32, _>(1))).collect();
-    let approved_ids: Vec<(i64, String)> = vote_map.iter()
-        .filter(|(_, v)| **v == 1)
-        .map(|(id, _)| (*id, "movie".to_string()))
-        .collect();
-
+    let approved_ids: Vec<(i64, String)> = vote_map.iter().filter(|(_, v)| **v == 1).map(|(id, _)| (*id, "movie".to_string())).collect();
     let mut seeds = Vec::new();
     {
         let mut rng = rand::thread_rng();
         let mut high_rated = tracked_shows.iter().filter(|i| i.rating >= 4).collect::<Vec<_>>();
         high_rated.shuffle(&mut rng);
-        
-        for item in high_rated.iter().take(5) {
-            seeds.push((item.tmdb_id as i64, item.media_type.clone()));
-        }
-        
-        let mut approved_shuffled = approved_ids.clone();
-        approved_shuffled.shuffle(&mut rng);
-        for app in approved_shuffled {
-            if !seeds.iter().any(|s| s.0 == app.0) { seeds.push(app); }
-        }
+        for item in high_rated.iter().take(5) { seeds.push((item.tmdb_id as i64, item.media_type.clone())); }
+        let mut app_shuffled = approved_ids.clone();
+        app_shuffled.shuffle(&mut rng);
+        for app in app_shuffled { if !seeds.iter().any(|s| s.0 == app.0) { seeds.push(app); } }
         seeds.shuffle(&mut rng);
     }
-
     let mut raw_recs = Vec::new();
     for (tmdb_id, media_type) in seeds.iter().take(10) {
-        if media_type == "movie" { 
-            if let Ok(results) = state.tmdb.get_movie_recommendations(*tmdb_id as u32).await { 
-                for mut m in results { m.media_type = Some("movie".to_string()); raw_recs.push(m); } 
-            } 
-        } else { 
-            if let Ok(results) = state.tmdb.get_tv_recommendations(*tmdb_id as u32).await { 
-                for mut m in results { m.media_type = Some("tv".to_string()); raw_recs.push(m); } 
-            } 
-        }
+        if media_type == "movie" { if let Ok(results) = state.tmdb.get_movie_recommendations(*tmdb_id as u32).await { for mut m in results { m.media_type = Some("movie".to_string()); raw_recs.push(m); } } }
+        else { if let Ok(results) = state.tmdb.get_tv_recommendations(*tmdb_id as u32).await { for mut m in results { m.media_type = Some("tv".to_string()); raw_recs.push(m); } } }
     }
-    
-    let mut seen = std::collections::HashSet::new(); 
-    raw_recs.retain(|m| {
-        seen.insert(m.id) && 
-        !tracked_ids.contains(&(m.id as i64)) && 
-        !disapproved.contains(&(m.id as i64))
-    });
-
-    {
-        let mut rng = rand::thread_rng();
-        raw_recs.shuffle(&mut rng);
-    }
-    
-    let final_recs = raw_recs.into_iter().take(20).map(|m| {
-        let v = vote_map.get(&(m.id as i64)).copied();
-        RecommendationMedia { media: m, vote: v }
-    }).collect();
-
+    let mut seen = std::collections::HashSet::new();
+    raw_recs.retain(|m| seen.insert(m.id) && !tracked_ids.contains(&(m.id as i64)) && !disapproved.contains(&(m.id as i64)));
+    { let mut rng = rand::thread_rng(); raw_recs.shuffle(&mut rng); }
+    let final_recs = raw_recs.into_iter().take(20).map(|m| { let v = vote_map.get(&(m.id as i64)).copied(); RecommendationMedia { media: m, vote: v } }).collect();
     Json(final_recs)
 }
 
@@ -1127,10 +1077,7 @@ async fn get_recommendations(State(state): State<AppState>) -> Json<Vec<Recommen
 struct VoteRequest { tmdb_id: u32, media_type: String, vote: i32 }
 
 async fn vote_recommendation(State(state): State<AppState>, Json(req): Json<VoteRequest>) -> Json<bool> {
-    match db::insert_recommendation_vote(&state.pool, req.tmdb_id, &req.media_type, req.vote).await {
-        Ok(_) => Json(true),
-        Err(_) => Json(false)
-    }
+    match db::insert_recommendation_vote(&state.pool, req.tmdb_id, &req.media_type, req.vote).await { Ok(_) => Json(true), Err(_) => Json(false) }
 }
 
 #[derive(Serialize)]
@@ -1176,8 +1123,7 @@ async fn fetch_subtitles_for_tracked(State(state): State<AppState>, Path(id): Pa
                 let lib_dir = std::env::var("NEURARR_LIBRARY_DIR").unwrap_or_else(|_| "./library".to_string());
                 let mut dest = std::path::PathBuf::from(&lib_dir);
                 if s.media_type == "tv" { dest.push("TV"); } else { dest.push("Movies"); }
-                dest.push(&s.title);
-                dest.push(&s.title);
+                dest.push(&s.title); dest.push(&s.title);
                 let _ = tokio::fs::create_dir_all(dest.parent().unwrap()).await;
                 if sub_client.download_subtitles(&s.title, &dest).await.is_ok() { return Json(true); }
             }
