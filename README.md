@@ -1,6 +1,6 @@
 # NeurArr
 
-![Rust CI](https://github.com/woodrock/neuarr/actions/workflows/rust.yml/badge.svg)
+[![Rust CI](https://github.com/woodRock/NeurArr/actions/workflows/rust.yml/badge.svg)](https://github.com/woodRock/NeurArr/actions/workflows/rust.yml)
 
 NeurArr is a blazingly fast, privacy-first, offline media management daemon.
  It uses local AI (via Ollama) to parse scene release names and generate spoiler-free metadata for your library.
