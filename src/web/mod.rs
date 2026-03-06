@@ -81,6 +81,7 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         .route("/api/episodes/{id}/status", post(set_episode_status))
         .route("/api/episodes/{id}/search", post(manual_search_episode))
         .route("/api/recommendations", get(get_recommendations))
+        .route("/api/recommendations/vote", post(vote_recommendation))
         .route("/api/next-up", get(get_next_up))
         .route("/api/preferences/chips", get(get_preference_chips))
         .route("/api/interactive-search", post(interactive_search))
@@ -404,7 +405,15 @@ async fn dashboard() -> impl IntoResponse {
         async function fetchRecommendations() {
             const res = await fetch('/api/recommendations'); const data = await res.json();
             document.getElementById('recommendation-results').innerHTML = data.length ? data.map(item => `
-                <div class="glass rounded-3xl overflow-hidden p-5 text-center cursor-pointer group hover:border-purple-500/50 transition-all duration-500" onclick="openItemDetailsExternal('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.media_type}')">
+                <div class="glass rounded-3xl overflow-hidden p-5 text-center cursor-pointer group hover:border-purple-500/50 transition-all duration-500 relative" onclick="openItemDetailsExternal('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.media_type}')">
+                    <div class="absolute top-7 right-7 flex flex-col gap-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                        <button onclick="event.stopPropagation(); vote(${item.id}, '${item.media_type}', 1)" class="p-2 bg-emerald-600/80 hover:bg-emerald-500 rounded-full text-white shadow-lg backdrop-blur-md transition-all scale-90 hover:scale-110">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M2 10.5a1.5 1.5 0 113 0v6a1.5 1.5 0 01-3 0v-6zM6 10.333v5.43a2 2 0 001.106 1.79l.05.025A4 4 0 008.943 18h5.416a2 2 0 001.962-1.608l1.2-6A2 2 0 0015.56 8H12V4a2 2 0 00-2-2 1 1 0 00-1 1v.667a4 4 0 01-.8 2.4L6.8 10.2a1 1 0 00-.8.133z" /></svg>
+                        </button>
+                        <button onclick="event.stopPropagation(); vote(${item.id}, '${item.media_type}', -1)" class="p-2 bg-rose-600/80 hover:bg-rose-500 rounded-full text-white shadow-lg backdrop-blur-md transition-all scale-90 hover:scale-110">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M18 9.5a1.5 1.5 0 11-3 0v-6a1.5 1.5 0 013 0v6zM14 9.667v-5.43a2 2 0 00-1.106-1.79l-.05-.025A4 4 0 0011.057 2H5.64a2 2 0 00-1.962 1.608l-1.2 6A2 2 0 004.44 12H8v4a2 2 0 002 2 1 1 0 001-1v-.667a4 4 0 01.8-2.4l1.4-1.867a1 1 0 00.8-.133z" /></svg>
+                        </button>
+                    </div>
                     <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-56 w-full object-cover rounded-2xl shadow-2xl group-hover:scale-105 transition-transform duration-500">
                     <div class="mt-4 text-[11px] font-black uppercase tracking-tighter truncate text-slate-200">${item.title || item.name}</div>
                     <div class="flex gap-2 mt-4">
@@ -412,6 +421,14 @@ async fn dashboard() -> impl IntoResponse {
                         <button onclick="event.stopPropagation(); track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}', 'wanted')" class="flex-grow bg-sky-600/10 text-sky-400 py-2.5 rounded-xl font-black text-[8px] hover:bg-sky-600 hover:text-white transition-all uppercase tracking-widest">Download</button>
                     </div>
                 </div>`).join('') : '<div class="col-span-5 text-center text-slate-600 py-32 font-black uppercase tracking-[0.3em] text-xs">Rate shows to trigger recommendations</div>';
+        }
+        async function vote(tmdbId, mediaType, vote) {
+            await fetch('/api/recommendations/vote', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tmdb_id: tmdbId, media_type: mediaType, vote })
+            });
+            fetchRecommendations();
         }
 
         async function fetchNextUp() {
@@ -561,10 +578,11 @@ async fn search_media(State(state): State<AppState>, Query(params): Query<Search
     for t in &mut tv { t.media_type = Some("tv".to_string()); }
     movies.append(&mut tv);
 
-    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
-        let tracked_ids: std::collections::HashSet<_> = tracked.into_iter().map(|s| s.tmdb_id as i64).collect();
-        movies.retain(|m| !tracked_ids.contains(&(m.id as i64)));
-    }
+    let tracked = db::get_tracked_shows(&state.pool).await.unwrap_or_default();
+    let disapproved = db::get_disapproved_ids(&state.pool).await.unwrap_or_default();
+    let tracked_ids: std::collections::HashSet<_> = tracked.into_iter().map(|s| s.tmdb_id as i64).collect();
+    
+    movies.retain(|m| !tracked_ids.contains(&(m.id as i64)) && !disapproved.contains(&(m.id as i64)));
 
     Json(movies)
 }
@@ -581,11 +599,9 @@ async fn semantic_search(State(state): State<AppState>, Json(req): Json<Semantic
         let mut all_results = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
 
-        let tracked_ids = if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
-            tracked.into_iter().map(|s| s.tmdb_id as i64).collect::<std::collections::HashSet<_>>()
-        } else {
-            std::collections::HashSet::new()
-        };
+        let tracked_ids = db::get_tracked_shows(&state.pool).await.unwrap_or_default()
+            .into_iter().map(|s| s.tmdb_id as i64).collect::<std::collections::HashSet<_>>();
+        let disapproved = db::get_disapproved_ids(&state.pool).await.unwrap_or_default();
 
         for title in titles_str.split(',') {
             let t = title.trim();
@@ -594,12 +610,12 @@ async fn semantic_search(State(state): State<AppState>, Json(req): Json<Semantic
             let tv = state.tmdb.search_tv(t, None).await.unwrap_or_default();
             
             if let Some(mut m) = movies.into_iter().next() { 
-                if !tracked_ids.contains(&(m.id as i64)) && seen_ids.insert(m.id) { 
+                if !tracked_ids.contains(&(m.id as i64)) && !disapproved.contains(&(m.id as i64)) && seen_ids.insert(m.id) { 
                     m.media_type = Some("movie".to_string()); all_results.push(m); 
                 } 
             }
             if let Some(mut t) = tv.into_iter().next() { 
-                if !tracked_ids.contains(&(t.id as i64)) && seen_ids.insert(t.id) { 
+                if !tracked_ids.contains(&(t.id as i64)) && !disapproved.contains(&(t.id as i64)) && seen_ids.insert(t.id) { 
                     t.media_type = Some("tv".to_string()); all_results.push(t); 
                 } 
             }
@@ -616,10 +632,11 @@ async fn get_upcoming(State(state): State<AppState>) -> Json<Vec<crate::integrat
     for t in &mut tv { t.media_type = Some("tv".to_string()); }
     results.append(&mut tv);
 
-    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
-        let tracked_ids: std::collections::HashSet<_> = tracked.into_iter().map(|s| s.tmdb_id as i64).collect();
-        results.retain(|m| !tracked_ids.contains(&(m.id as i64)));
-    }
+    let tracked = db::get_tracked_shows(&state.pool).await.unwrap_or_default();
+    let disapproved = db::get_disapproved_ids(&state.pool).await.unwrap_or_default();
+    let tracked_ids: std::collections::HashSet<_> = tracked.into_iter().map(|s| s.tmdb_id as i64).collect();
+    
+    results.retain(|m| !tracked_ids.contains(&(m.id as i64)) && !disapproved.contains(&(m.id as i64)));
 
     Json(results)
 }
@@ -774,10 +791,11 @@ async fn search_by_genre(State(state): State<AppState>, Query(params): Query<Gen
             }
         }
 
-        if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
-            let tracked_ids: std::collections::HashSet<_> = tracked.into_iter().map(|s| s.tmdb_id as i64).collect();
-            results.retain(|m| !tracked_ids.contains(&(m.id as i64)));
-        }
+        let tracked = db::get_tracked_shows(&state.pool).await.unwrap_or_default();
+        let disapproved = db::get_disapproved_ids(&state.pool).await.unwrap_or_default();
+        let tracked_ids: std::collections::HashSet<_> = tracked.into_iter().map(|s| s.tmdb_id as i64).collect();
+        
+        results.retain(|m| !tracked_ids.contains(&(m.id as i64)) && !disapproved.contains(&(m.id as i64)));
 
         return Json(results);
     }
@@ -943,16 +961,49 @@ async fn get_recommendations(State(state): State<AppState>) -> Json<Vec<crate::i
     let mut recs = Vec::new();
     let tracked_shows = db::get_tracked_shows(&state.pool).await.unwrap_or_default();
     let tracked_ids: std::collections::HashSet<_> = tracked_shows.iter().map(|s| s.tmdb_id as i64).collect();
+    let disapproved = db::get_disapproved_ids(&state.pool).await.unwrap_or_default();
+    let approved = db::get_approved_ids(&state.pool).await.unwrap_or_default();
 
-    let mut seed_items = tracked_shows.clone();
-    seed_items.sort_by(|a, b| b.rating.cmp(&a.rating));
-    for item in seed_items.iter().take(3) {
-        if item.media_type == "movie" { if let Ok(results) = state.tmdb.get_movie_recommendations(item.tmdb_id as u32).await { for mut m in results { m.media_type = Some("movie".to_string()); recs.push(m); } } }
-        else { if let Ok(results) = state.tmdb.get_tv_recommendations(item.tmdb_id as u32).await { for mut m in results { m.media_type = Some("tv".to_string()); recs.push(m); } } }
+    let mut seeds = Vec::new();
+    let mut top_rated = tracked_shows.clone();
+    top_rated.sort_by(|a, b| b.rating.cmp(&a.rating));
+    for item in top_rated.iter().filter(|i| i.rating >= 4).take(5) {
+        seeds.push((item.tmdb_id as i64, item.media_type.clone()));
     }
+    for app in approved {
+        if !seeds.iter().any(|s| s.0 == app.0) { seeds.push(app); }
+    }
+
+    for (tmdb_id, media_type) in seeds.iter().take(10) {
+        if media_type == "movie" { 
+            if let Ok(results) = state.tmdb.get_movie_recommendations(*tmdb_id as u32).await { 
+                for mut m in results { m.media_type = Some("movie".to_string()); recs.push(m); } 
+            } 
+        } else { 
+            if let Ok(results) = state.tmdb.get_tv_recommendations(*tmdb_id as u32).await { 
+                for mut m in results { m.media_type = Some("tv".to_string()); recs.push(m); } 
+            } 
+        }
+    }
+    
     let mut seen = std::collections::HashSet::new(); 
-    recs.retain(|m| seen.insert(m.id) && !tracked_ids.contains(&(m.id as i64)));
+    recs.retain(|m| {
+        seen.insert(m.id) && 
+        !tracked_ids.contains(&(m.id as i64)) && 
+        !disapproved.contains(&(m.id as i64))
+    });
+    
     Json(recs.into_iter().take(20).collect())
+}
+
+#[derive(Deserialize)]
+struct VoteRequest { tmdb_id: u32, media_type: String, vote: i32 }
+
+async fn vote_recommendation(State(state): State<AppState>, Json(req): Json<VoteRequest>) -> Json<bool> {
+    match db::insert_recommendation_vote(&state.pool, req.tmdb_id, &req.media_type, req.vote).await {
+        Ok(_) => Json(true),
+        Err(_) => Json(false)
+    }
 }
 
 #[derive(Serialize)]

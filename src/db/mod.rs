@@ -271,12 +271,45 @@ pub async fn reset_movie_attempts(pool: &SqlitePool, id: i64) -> Result<()> {
 }
 
 pub async fn delete_tracked_show(pool: &SqlitePool, id: i64) -> Result<()> {
-    sqlx::query("DELETE FROM tracked_shows WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    sqlx::query("DELETE FROM tracked_shows WHERE id = ?").bind(id).execute(pool).await?;
     Ok(())
 }
+
+pub async fn insert_recommendation_vote(
+    pool: &SqlitePool,
+    tmdb_id: u32,
+    media_type: &str,
+    vote: i32,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO recommendation_feedback (tmdb_id, media_type, vote)
+         VALUES (?, ?, ?)
+         ON CONFLICT(tmdb_id, media_type) DO UPDATE SET vote = EXCLUDED.vote"
+    )
+    .bind(tmdb_id as i64)
+    .bind(media_type)
+    .bind(vote)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_disapproved_ids(pool: &SqlitePool) -> Result<std::collections::HashSet<i64>> {
+    let rows = sqlx::query("SELECT tmdb_id FROM recommendation_feedback WHERE vote = -1")
+        .fetch_all(pool)
+        .await?;
+    use sqlx::Row;
+    Ok(rows.into_iter().map(|r| r.get::<i64, _>(0)).collect())
+}
+
+pub async fn get_approved_ids(pool: &SqlitePool) -> Result<Vec<(i64, String)>> {
+    let rows = sqlx::query("SELECT tmdb_id, media_type FROM recommendation_feedback WHERE vote = 1")
+        .fetch_all(pool)
+        .await?;
+    use sqlx::Row;
+    Ok(rows.into_iter().map(|r| (r.get::<i64, _>(0), r.get::<String, _>(1))).collect())
+}
+
 
 #[allow(dead_code)]
 pub async fn get_wanted_shows(pool: &SqlitePool) -> Result<Vec<TrackedShow>> {
