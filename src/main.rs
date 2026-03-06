@@ -414,7 +414,7 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
         }
     });
 
