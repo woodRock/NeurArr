@@ -120,7 +120,6 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         .card-content { word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; }
         .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 100; align-items: center; justify-content: center; }
         .modal.active { display: flex; }
-        .placeholder-poster { background: #1e293b; display: flex; align-items: center; justify-content: center; color: #475569; font-weight: bold; font-size: 10px; text-align: center; }
     </style>
 </head>
 <body class="p-4">
@@ -171,9 +170,7 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
             <input type="text" id="modal-search-input" class="flex-grow glass rounded-xl px-4 py-2 outline-none focus:ring-2 focus:ring-sky-500/50">
             <button onclick="searchInModal()" class="bg-sky-600 px-6 py-2 rounded-xl font-bold hover:bg-sky-500 transition-colors text-sm">SEARCH</button>
         </div>
-        <div id="modal-results" class="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <div class="col-span-3 text-center text-slate-500 py-10">Use the search box above to find a match.</div>
-        </div>
+        <div id="modal-results" class="grid grid-cols-2 md:grid-cols-3 gap-4"></div>
     </div></div>
 
     <div id="episodes-modal" class="modal"><div class="glass p-8 rounded-3xl w-full max-w-4xl max-h-[80vh] overflow-y-auto">
@@ -195,7 +192,12 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
                 const nav = document.getElementById('nav-' + t);
                 if (nav) nav.classList.toggle('active', t === tab);
             });
-            if(tab === 'queue') fetchQueue(); if(tab === 'tracked') fetchTracked(); if(tab === 'upcoming') fetchUpcoming(); if(tab === 'downloads') fetchTorrents(); if(tab === 'settings') fetchDisks(); if(tab === 'calendar') fetchCalendar();
+            if(tab === 'queue') fetchQueue(); 
+            if(tab === 'tracked') fetchTracked(); 
+            if(tab === 'upcoming') fetchUpcoming(); 
+            if(tab === 'downloads') fetchTorrents(); 
+            if(tab === 'settings') fetchDisks(); 
+            if(tab === 'calendar') fetchCalendar();
         }
 
         async function fetchQueue() {
@@ -206,23 +208,23 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
                     <div class="font-bold truncate text-sm text-sky-400">${item.title}</div>
                     <div class="text-[9px] font-black bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded inline-block mt-1 uppercase">${item.status}</div>
                     <div class="text-[10px] text-slate-500 mt-2 truncate">${item.original_filename}</div>
-                    <button onclick="openMatchModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-[10px] font-bold text-sky-400 mt-3 block hover:underline">MANUAL MATCH</button>
+                    <button onclick="openMatchModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-[10px] font-bold text-sky-400 mt-3 block hover:underline uppercase">Manual Match</button>
                 </div>
             `).join('') : '<div class="col-span-3 text-center text-slate-500 py-20">Queue is empty.</div>';
         }
 
         async function fetchTracked() {
             const res = await fetch('/api/tracked'); const data = await res.json();
-            document.getElementById('tab-tracked').innerHTML = data.map(item => `
+            document.getElementById('tab-tracked').innerHTML = data.length ? data.map(item => `
                 <div class="glass rounded-xl overflow-hidden group border border-slate-800/50">
                     <div class="relative"><img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-64 w-full object-cover" onerror="this.src='${placeholder}'">
                     <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all">
-                        <button onclick="deleteTracked(${item.id})" class="bg-rose-600 text-white px-4 py-2 rounded text-xs font-bold">REMOVE</button>
+                        <button onclick="deleteTracked(${item.id})" class="bg-rose-600 px-4 py-2 rounded text-xs font-bold">REMOVE</button>
                     </div></div>
                     <div class="p-3"><div class="font-bold text-sm truncate">${item.title}</div>
-                    <button onclick="openEpisodeModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-xs text-sky-400 mt-1 font-bold uppercase">View Episodes</button></div>
+                    <button onclick="openEpisodeModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-xs text-sky-400 mt-1 font-bold uppercase hover:underline">View Episodes</button></div>
                 </div>
-            `).join('');
+            `).join('') : '<div class="col-span-5 text-center text-slate-500 py-20 uppercase font-bold text-xs tracking-widest">No shows tracked yet.</div>';
         }
 
         async function performGlobalSearch() {
@@ -233,7 +235,7 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
                     <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-48 w-full object-cover rounded shadow-lg" onerror="this.src='${placeholder}'">
                     <div class="mt-3 text-sm font-bold truncate">${item.title || item.name}</div>
                     <div class="text-[10px] text-slate-500 mb-3">${item.release_date || item.first_air_date || 'Unknown'}</div>
-                    <button onclick="track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="w-full bg-sky-600/20 text-sky-400 py-2 rounded font-bold text-[10px] hover:bg-sky-600 hover:text-white transition-all">TRACK</button>
+                    <button onclick="track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="w-full bg-sky-600/20 text-sky-400 py-2 rounded font-bold text-[10px] hover:bg-sky-600 hover:text-white transition-all uppercase tracking-widest">Track</button>
                 </div>
             `).join('');
         }
@@ -248,33 +250,19 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         async function searchInModal() {
             const query = document.getElementById('modal-search-input').value;
             if(!query) return;
-            
-            document.getElementById('modal-results').innerHTML = '<div class="col-span-3 text-center text-slate-500 py-10">Searching matches for "'+query+'"...</div>';
-            
-            try {
-                const res = await fetch('/api/search?q=' + encodeURIComponent(query)); 
-                const data = await res.json();
-                
-                if (data.length === 0) {
-                    document.getElementById('modal-results').innerHTML = '<div class="col-span-3 text-center text-rose-400 py-10">No matches found. Try refining your search.</div>';
-                    return;
-                }
-
-                document.getElementById('modal-results').innerHTML = data.map(item => `
-                    <div class="glass p-3 rounded-xl text-center border border-slate-800">
-                        <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w200${item.poster_path}` : placeholder}" class="w-full h-32 object-cover rounded shadow-md" onerror="this.src='${placeholder}'">
-                        <div class="font-bold text-[10px] mt-2 truncate w-full px-1">${item.title || item.name}</div>
-                        <div class="text-[8px] text-slate-500 mb-2">${item.release_date || item.first_air_date || ''}</div>
-                        <button onclick="applyMatch('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}')" class="text-sky-400 text-[10px] font-bold hover:underline uppercase">Select</button>
-                    </div>
-                `).join('');
-            } catch (e) {
-                document.getElementById('modal-results').innerHTML = '<div class="col-span-3 text-center text-rose-400 py-10">Error searching matches.</div>';
-            }
+            document.getElementById('modal-results').innerHTML = '<div class="col-span-3 text-center text-slate-500 py-10">Searching matches...</div>';
+            const res = await fetch('/api/search?q=' + encodeURIComponent(query)); const data = await res.json();
+            document.getElementById('modal-results').innerHTML = data.length ? data.map(item => `
+                <div class="glass p-3 rounded-xl text-center border border-slate-800">
+                    <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w200${item.poster_path}` : placeholder}" class="w-full h-32 object-cover rounded shadow-md" onerror="this.src='${placeholder}'">
+                    <div class="font-bold text-[10px] mt-2 truncate w-full">${item.title || item.name}</div>
+                    <button onclick="applyMatch('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}')" class="text-sky-400 text-[9px] font-black mt-2 hover:underline uppercase tracking-tighter">Select Match</button>
+                </div>
+            `).join('') : '<div class="col-span-3 text-center text-rose-400 py-10">No matches found.</div>';
         }
 
         async function applyMatch(tmdbId, title, poster) {
-            const applyToAll = confirm('Smart Match all similar titles in queue?');
+            const applyToAll = confirm('Smart Match all items with this title?');
             await fetch(`/api/media/${currentMatchId}/match`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ tmdb_id: parseInt(tmdbId), title, poster_path: poster, apply_to_all: applyToAll })
@@ -293,7 +281,7 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
                     <span><b class="text-sky-400 mr-2">S${ep.season}E${ep.episode}</b> ${ep.title}</span>
                     <span class="text-[9px] font-black uppercase text-slate-500">${ep.status}</span>
                 </div>
-            `).join('') : '<div class="text-center text-slate-500 py-10">Syncing episodes... check back in a minute.</div>';
+            `).join('') : '<div class="text-center text-slate-500 py-10">No episodes found.</div>';
         }
 
         async function fetchTorrents() {
@@ -301,24 +289,19 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
             document.getElementById('tab-downloads').innerHTML = data.length ? data.map(t => `
                 <div class="glass p-4 rounded-xl border border-slate-800">
                     <div class="flex justify-between text-xs font-bold mb-2"><span>${t.name}</span><span class="text-sky-400">${(t.progress*100).toFixed(1)}%</span></div>
-                    <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden"><div class="bg-sky-500 h-full transition-all duration-1000" style="width:${t.progress*100}%"></div></div>
-                    <div class="flex justify-between text-[9px] text-slate-500 mt-2 font-black"><span>${t.state.toUpperCase()}</span><span>${(t.dlspeed / 1024 / 1024).toFixed(1)} MB/S</span></div>
+                    <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden"><div class="bg-sky-500 h-full" style="width:${t.progress*100}%"></div></div>
+                    <div class="flex justify-between text-[9px] text-slate-500 mt-2 font-black uppercase"><span>${t.state}</span><span>${(t.dlspeed / 1024 / 1024).toFixed(1)} MB/S</span></div>
                 </div>
-            `).join('') : '<div class="text-center text-slate-500 py-20 font-bold uppercase tracking-widest text-xs">No active downloads in qBittorrent.</div>';
+            `).join('') : '<div class="text-center text-slate-500 py-20 font-bold uppercase tracking-widest text-xs">No active downloads.</div>';
         }
 
-        async function fetchSysInfo() {
-            const res = await fetch('/api/sysinfo'); const data = await res.json();
-            document.getElementById('sys-cpu').innerText = `CPU: ${data.cpu_usage.toFixed(1)}%`;
-            document.getElementById('sys-ram').innerText = `RAM: ${data.memory_used}MB`;
-        }
-
-        async function fetchDisks() {
-            const res = await fetch('/api/disks'); const data = await res.json();
-            document.getElementById('disk-info').innerHTML = data.map(d => `
-                <div class="mb-4">
-                    <div class="flex justify-between text-xs font-bold mb-1"><span>${d.name}</span><span>${d.available}GB / ${d.total}GB FREE</span></div>
-                    <div class="w-full h-1 bg-slate-800 rounded-full overflow-hidden"><div class="bg-sky-500 h-full" style="width:${(1 - d.available/d.total)*100}%"></div></div>
+        async function fetchUpcoming() {
+            const res = await fetch('/api/upcoming'); const data = await res.json();
+            document.getElementById('tab-upcoming').innerHTML = data.map(item => `
+                <div class="glass rounded-xl overflow-hidden p-4 border border-slate-800/50 text-center">
+                    <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-48 w-full object-cover rounded shadow-lg" onerror="this.src='${placeholder}'">
+                    <div class="mt-3 text-sm font-bold truncate">${item.title || item.name}</div>
+                    <button onclick="track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="text-sky-400 text-[10px] font-bold mt-2 hover:underline uppercase">Track</button>
                 </div>
             `).join('');
         }
@@ -333,13 +316,24 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
             `).join('') : '<div class="text-center text-slate-500 py-20 font-bold text-xs uppercase tracking-widest">No releases in the next 7 days.</div>';
         }
 
-        async function track(id, title, poster, date, type) { await fetch('/api/track', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:parseInt(id),title,poster_path:poster,release_date:date,media_type:type||'movie'})}); alert('Added '+title+' to Collection'); }
-        async function deleteTracked(id) { if(confirm('Permanently stop tracking this show?')) { await fetch('/api/tracked/'+id,{method:'DELETE'}); fetchTracked(); } }
-        async function clearQueue() { if(confirm('Clear all processing history?')) { await fetch('/api/media/clear', {method:'DELETE'}); fetchQueue(); } }
-        async function scanLibrary() { await fetch('/api/scan-library', {method:'POST'}); alert('Full library scan started!'); }
-        async function updateApp() { if(confirm('Download latest version and rebuild?')) { await fetch('/api/update', {method:'POST'}); alert('Updating... Refresh manually in 1 minute.'); } }
+        async function fetchSysInfo() {
+            const res = await fetch('/api/sysinfo'); const data = await res.json();
+            document.getElementById('sys-cpu').innerText = `CPU: ${data.cpu_usage.toFixed(1)}%`;
+            document.getElementById('sys-ram').innerText = `RAM: ${data.memory_used}MB`;
+        }
 
-        showTab('queue'); setInterval(fetchSysInfo, 3000); setInterval(fetchTorrents, 5000);
+        async function fetchDisks() {
+            const res = await fetch('/api/disks'); const data = await res.json();
+            document.getElementById('disk-info').innerHTML = data.map(d => `<div class="mb-2"><span>${d.name}: ${d.available}GB free / ${d.total}GB total</span><div class="w-full h-1 bg-slate-800 mt-1"><div class="bg-sky-500 h-full" style="width:${(1 - d.available/d.total)*100}%"></div></div></div>`).join('');
+        }
+
+        async function track(id, title, poster, date, type) { await fetch('/api/track', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:parseInt(id),title,poster_path:poster,release_date:date,media_type:type||'movie'})}); alert('Tracked!'); }
+        async function deleteTracked(id) { if(confirm('Remove?')) { await fetch('/api/tracked/'+id,{method:'DELETE'}); fetchTracked(); } }
+        async function clearQueue() { if(confirm('Clear history?')) { await fetch('/api/media/clear', {method:'DELETE'}); fetchQueue(); } }
+        async function scanLibrary() { await fetch('/api/scan-library', {method:'POST'}); alert('Scan started!'); }
+        async function updateApp() { if(confirm('Update?')) { await fetch('/api/update', {method:'POST'}); alert('Updating...'); } }
+
+        showTab('queue'); setInterval(fetchSysInfo, 3000);
     </script>
 </body>
 </html>
