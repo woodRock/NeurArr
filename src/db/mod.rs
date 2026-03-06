@@ -51,6 +51,7 @@ pub async fn insert_media_item(
     Ok(result.last_insert_rowid())
 }
 
+#[allow(dead_code)]
 pub async fn update_item_poster(
     pool: &SqlitePool,
     id: i64,
@@ -186,6 +187,7 @@ pub async fn delete_tracked_show(pool: &SqlitePool, id: i64) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn get_wanted_shows(pool: &SqlitePool) -> Result<Vec<TrackedShow>> {
     let items = sqlx::query_as::<_, TrackedShow>("SELECT * FROM tracked_shows WHERE status = 'wanted' ORDER BY added_at ASC")
         .fetch_all(pool)
@@ -285,6 +287,7 @@ pub struct Episode {
     pub air_date: Option<String>,
 }
 
+#[allow(dead_code)]
 pub async fn update_tracked_show_status(pool: &SqlitePool, id: i64, status: &str) -> Result<()> {
     sqlx::query("UPDATE tracked_shows SET status = ? WHERE id = ?")
         .bind(status)
@@ -297,6 +300,30 @@ pub async fn update_tracked_show_status(pool: &SqlitePool, id: i64, status: &str
 pub async fn clear_media_queue(pool: &SqlitePool) -> Result<()> {
     sqlx::query("DELETE FROM media_items").execute(pool).await?;
     Ok(())
+}
+
+#[derive(sqlx::FromRow, serde::Serialize, serde::Deserialize, Clone)]
+pub struct QualityProfile {
+    pub id: i64,
+    pub name: String,
+    pub min_resolution: String,
+    pub max_resolution: String,
+    pub must_contain: Option<String>,
+    pub must_not_contain: Option<String>,
+}
+
+pub async fn get_default_quality_profile(pool: &SqlitePool) -> Result<QualityProfile> {
+    let profile = sqlx::query_as::<_, QualityProfile>("SELECT id, name, min_resolution, max_resolution, must_contain, must_not_contain FROM quality_profiles WHERE is_default = 1 LIMIT 1")
+        .fetch_one(pool)
+        .await?;
+    Ok(profile)
+}
+
+pub async fn get_all_quality_profiles(pool: &SqlitePool) -> Result<Vec<QualityProfile>> {
+    let profiles = sqlx::query_as::<_, QualityProfile>("SELECT id, name, min_resolution, max_resolution, must_contain, must_not_contain FROM quality_profiles")
+        .fetch_all(pool)
+        .await?;
+    Ok(profiles)
 }
 
 pub async fn insert_manual_match(

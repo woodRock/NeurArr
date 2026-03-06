@@ -17,6 +17,8 @@ urlencoding = "2.1"
 # File System & Utils
 notify = "8.0"
 tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+futures-util = "0.3"
 anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -27,6 +29,7 @@ clap = { version = "4.5", features = ["derive"] }
 regex = "1.10"
 sysinfo = "0.30"
 chrono = "0.4"
+walkdir = "2.5.0"
 
 [profile.release]
 opt-level = 3

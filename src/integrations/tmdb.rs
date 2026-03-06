@@ -9,7 +9,6 @@ pub struct TmdbSearchResult {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[allow(dead_code)]
 pub struct TmdbMedia {
     pub id: u32,
     pub title: Option<String>,
@@ -18,6 +17,18 @@ pub struct TmdbMedia {
     pub release_date: Option<String>,
     pub first_air_date: Option<String>,
     pub media_type: Option<String>,
+    pub poster_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TmdbMediaFull {
+    pub id: u32,
+    pub name: Option<String>,
+    pub title: Option<String>,
+    pub overview: Option<String>,
+    pub number_of_seasons: Option<u32>,
+    pub release_date: Option<String>,
+    pub first_air_date: Option<String>,
     pub poster_path: Option<String>,
 }
 
@@ -58,22 +69,21 @@ impl TmdbClient {
         Ok(response.results)
     }
 
-    #[allow(dead_code)]
-    pub async fn get_movie_details(&self, id: u32) -> Result<TmdbMedia> {
+    pub async fn get_movie_details(&self, id: u32) -> Result<TmdbMediaFull> {
         let url = format!(
             "https://api.themoviedb.org/3/movie/{}?api_key={}",
             id, self.api_key
         );
-        let response = self.client.get(&url).send().await?.json::<TmdbMedia>().await?;
+        let response = self.client.get(&url).send().await?.json::<TmdbMediaFull>().await?;
         Ok(response)
     }
 
-    pub async fn get_tv_details(&self, id: u32) -> Result<TmdbMedia> {
+    pub async fn get_tv_details(&self, id: u32) -> Result<TmdbMediaFull> {
         let url = format!(
             "https://api.themoviedb.org/3/tv/{}?api_key={}",
             id, self.api_key
         );
-        let response = self.client.get(&url).send().await?.json::<TmdbMedia>().await?;
+        let response = self.client.get(&url).send().await?.json::<TmdbMediaFull>().await?;
         Ok(response)
     }
 
@@ -93,15 +103,6 @@ impl TmdbClient {
         );
         let response = self.client.get(&url).send().await?.json::<TmdbSearchResult>().await?;
         Ok(response.results)
-    }
-
-    pub async fn get_tv_details(&self, id: u32) -> Result<TmdbMediaFull> {
-        let url = format!(
-            "https://api.themoviedb.org/3/tv/{}?api_key={}",
-            id, self.api_key
-        );
-        let response = self.client.get(&url).send().await?.json::<TmdbMediaFull>().await?;
-        Ok(response)
     }
 
     pub async fn get_tv_season(&self, id: u32, season: u32) -> Result<Vec<TmdbEpisode>> {
@@ -136,15 +137,6 @@ impl TmdbClient {
         }
         Ok(titles)
     }
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct TmdbMediaFull {
-    pub id: u32,
-    pub name: Option<String>,
-    pub title: Option<String>,
-    pub overview: Option<String>,
-    pub number_of_seasons: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use reqwest::{Client, cookie::Jar};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
 use tracing::info;
@@ -12,14 +12,12 @@ struct LoginRequest {
     password: String,
 }
 
-#[allow(dead_code)]
 pub struct QBittorrentClient {
     client: Client,
     base_url: String,
 }
 
 impl QBittorrentClient {
-    #[allow(dead_code)]
     pub fn new() -> Result<Self> {
         let base_url = env::var("QBITTORRENT_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
         let jar = Arc::new(Jar::default());
@@ -31,7 +29,6 @@ impl QBittorrentClient {
         Ok(Self { client, base_url })
     }
 
-    #[allow(dead_code)]
     pub async fn login(&self) -> Result<()> {
         let username = env::var("QBITTORRENT_USER").unwrap_or_else(|_| "admin".to_string());
         let password = env::var("QBITTORRENT_PASS").unwrap_or_else(|_| "adminadmin".to_string());
@@ -53,7 +50,6 @@ impl QBittorrentClient {
         }
     }
 
-    #[allow(dead_code)]
     pub async fn add_torrent_url(&self, magnet_url: &str, save_path: Option<&str>) -> Result<()> {
         let url = format!("{}/api/v2/torrents/add", self.base_url);
         let mut params = vec![("urls", magnet_url.to_string())];
@@ -75,4 +71,20 @@ impl QBittorrentClient {
             anyhow::bail!("Failed to add torrent: {}", response.status());
         }
     }
+
+    pub async fn get_torrents(&self) -> Result<Vec<TorrentInfo>> {
+        let url = format!("{}/api/v2/torrents/info", self.base_url);
+        let response = self.client.get(&url).send().await?.json::<Vec<TorrentInfo>>().await?;
+        Ok(response)
+    }
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct TorrentInfo {
+    pub name: String,
+    pub progress: f32,
+    pub state: String,
+    pub eta: u64,
+    pub dlspeed: u64,
+    pub size: u64,
 }

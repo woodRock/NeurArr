@@ -11,11 +11,11 @@ struct OllamaChatMessage {
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)]
 struct OllamaChatRequest {
     model: String,
     messages: Vec<OllamaChatMessage>,
     stream: bool,
-    // Note: We are removing the 'format' field to avoid the JSON mode hang
     options: Option<serde_json::Value>,
 }
 
@@ -44,22 +44,23 @@ impl OllamaClient {
         })
     }
 
-    pub async fn chat(&self, system: &str, user: &str) -> Result<String> {
+    pub async fn chat(&self, system: &str, user: &str, is_json: bool) -> Result<String> {
         info!("Sending chat request to Ollama ({})", self.model);
         
         let url = format!("{}/api/chat", self.base_url);
-        let request = OllamaChatRequest {
-            model: self.model.clone(),
-            messages: vec![
-                OllamaChatMessage { role: "system".to_string(), content: system.to_string() },
-                OllamaChatMessage { role: "user".to_string(), content: user.to_string() },
+        let request = serde_json::json!({
+            "model": self.model,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user }
             ],
-            stream: false,
-            options: Some(serde_json::json!({
-                "temperature": 0.1, // Slightly above 0 to avoid loops
-                "num_predict": 512,
-            })),
-        };
+            "stream": false,
+            "format": if is_json { "json" } else { "" },
+            "options": {
+                "temperature": 0.1,
+                "num_predict": 512
+            }
+        });
 
         let response = self.client
             .post(&url)
@@ -81,17 +82,17 @@ impl OllamaClient {
     pub async fn parse_scene_release(&self, filename: &str) -> Result<String> {
         let system = "You are a media parser. Return a JSON object with these fields: title, season, episode, resolution, source. Return ONLY the JSON block.";
         let user = format!("Parse: {}", filename);
-        self.chat(system, &user).await
+        self.chat(system, &user, true).await
     }
 
     pub async fn rewrite_summary(&self, summary: &str) -> Result<String> {
         let system = "Rewrite this movie summary to be spoiler-free. Keep the setup, remove twists and endings. Return only the rewritten text.";
         let user = format!("Rewrite: {}", summary);
-        self.chat(system, &user).await
+        self.chat(system, &user, false).await
     }
 
     pub async fn verify_torrent_match(&self, target_title: &str, torrent_title: &str) -> Result<bool> {
-        let system = "You are a torrent verification expert. Compare the target title with the torrent title. If the torrent title is a match for the target (allowing for year, resolution, and minor scene naming variations), return the word 'true'. If it is a different show or movie entirely, return 'false'. Do not explain.";
+        let system = "Compare target with torrent. Return 'true' if they match, 'false' otherwise. Only return one word.";
         let user = format!("Target: {}\nTorrent: {}\nMatch:", target_title, torrent_title);
         let response = self.chat(system, &user, false).await?;
         Ok(response.to_lowercase().contains("true"))
