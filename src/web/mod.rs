@@ -656,6 +656,7 @@ async fn interactive_search(State(_state): State<AppState>, Json(req): Json<Inte
 struct DownloadRequest { link: String, title: String, episode_id: Option<i64>, show_id: Option<i64> }
 
 async fn download_torrent(State(state): State<AppState>, Json(req): Json<DownloadRequest>) -> Json<bool> {
+    info!("Manual download requested for: {}", req.title);
     let qbit = crate::integrations::torrent::QBittorrentClient::new().unwrap();
     let _ = qbit.login().await;
     let ing = std::fs::canonicalize("./ingest").unwrap_or_else(|_| std::path::PathBuf::from("./ingest"));
