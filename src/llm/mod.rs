@@ -112,4 +112,9 @@ Rules:
         
         Ok(res_lower.contains("true") || (res_lower.contains("yes") && !res_lower.contains("no")))
     }
+
+    pub async fn semantic_search_translate(&self, prompt: &str) -> Result<String> {
+        let system = "You are a movie recommendation engine. Extract the core search keywords from the user's prompt. Reply ONLY with a single search query string (max 4 words) that would work well in a traditional movie database search engine. Do not use quotes or explanations.";
+        self.chat(system, prompt, false).await
+    }
 }

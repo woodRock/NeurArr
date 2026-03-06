@@ -76,6 +76,7 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         .route("/api/media/{id}/match", post(match_media))
         .route("/api/search", get(search_media))
         .route("/api/search/genre", get(search_by_genre))
+        .route("/api/search/semantic", post(semantic_search))
         .route("/api/upcoming", get(get_upcoming))
         .route("/api/calendar", get(get_calendar))
         .route("/api/track", post(track_show))
@@ -87,6 +88,7 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         .route("/api/tracked/{id}/seasons/{season}/status", post(bulk_set_season_status))
         .route("/api/tracked/{id}/trailers", get(get_trailers))
         .route("/api/tracked/{id}/credits", get(get_credits))
+        .route("/api/tracked/{id}/subtitles", post(fetch_subtitles_for_tracked))
         .route("/api/external/{type}/{id}/trailers", get(get_external_trailers))
         .route("/api/external/{type}/{id}/credits", get(get_external_credits))
         .route("/api/episodes/{id}/status", post(set_episode_status))
@@ -105,6 +107,7 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         .route("/api/update", post(trigger_update))
         .route("/api/scan-library", post(scan_library))
         .route("/api/ingest", post(trigger_ingest))
+        .route("/api/settings/config", get(get_config).post(update_config))
         .layer(middleware::from_fn(auth_middleware))
         .route("/login", get(login_page).post(handle_login))
         .with_state(state);
@@ -168,6 +171,7 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         </div>
         <button onclick="showTab('recommendations')" id="nav-recommendations" class="active font-bold text-xs tracking-widest uppercase opacity-50 hover:opacity-100 transition-opacity">For You</button>
         <button onclick="showTab('upcoming')" id="nav-upcoming" class="font-bold text-xs tracking-widest uppercase opacity-50 hover:opacity-100 transition-opacity">Discover</button>
+        <button onclick="showTab('watchlist')" id="nav-watchlist" class="font-bold text-xs tracking-widest uppercase opacity-50 hover:opacity-100 transition-opacity">Watchlist</button>
         <button onclick="showTab('tracked')" id="nav-tracked" class="font-bold text-xs tracking-widest uppercase opacity-50 hover:opacity-100 transition-opacity">Collection</button>
         <button onclick="showTab('activity')" id="nav-activity" class="font-bold text-xs tracking-widest uppercase opacity-50 hover:opacity-100 transition-opacity">Activity</button>
         
@@ -196,9 +200,13 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
     </div>
 
     <div class="max-w-7xl mx-auto">
-        <div class="flex gap-4 mb-12">
-            <input type="text" id="search-query" placeholder="Search for something new..." class="flex-grow bg-white/5 border border-white/10 rounded-2xl px-8 py-4 outline-none focus:ring-2 focus:ring-sky-500/50 text-lg font-medium placeholder:text-slate-600 transition-all">
+        <div class="flex flex-col md:flex-row gap-4 mb-12">
+            <input type="text" id="search-query" placeholder="Search by title, or describe what you're in the mood for..." class="flex-grow bg-white/5 border border-white/10 rounded-2xl px-8 py-4 outline-none focus:ring-2 focus:ring-sky-500/50 text-lg font-medium placeholder:text-slate-600 transition-all">
             <button onclick="performGlobalSearch()" class="bg-sky-600 px-10 py-4 rounded-2xl font-bold hover:bg-sky-500 transition-all shadow-lg shadow-sky-900/20 active:scale-95">SEARCH</button>
+            <button onclick="performSemanticSearch()" class="bg-purple-600 px-6 py-4 rounded-2xl font-bold hover:bg-purple-500 transition-all shadow-lg shadow-purple-900/20 active:scale-95 flex items-center justify-center gap-2 whitespace-nowrap">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z" /></svg>
+                AI DISCOVER
+            </button>
         </div>
 
         <div id="tab-recommendations" class="space-y-8">
@@ -214,6 +222,7 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
             <div id="upcoming-results" class="grid grid-cols-2 md:grid-cols-5 gap-6"></div>
         </div>
 
+        <div id="tab-watchlist" class="hidden grid grid-cols-2 md:grid-cols-5 gap-6"></div>
         <div id="tab-tracked" class="hidden grid grid-cols-2 md:grid-cols-5 gap-6"></div>
         
         <div id="tab-activity" class="hidden space-y-4">
@@ -225,13 +234,20 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         <div id="tab-search" class="hidden grid grid-cols-2 md:grid-cols-5 gap-6"></div>
         <div id="tab-logs" class="hidden glass p-6 rounded-2xl font-mono text-[11px] h-[70vh] overflow-y-auto space-y-1 border border-white/5" id="log-container"></div>
         
-        <div id="tab-settings" class="hidden glass p-8 rounded-xl">
-            <h2 class="font-bold mb-4 text-xl">System Status</h2>
-            <div id="disk-info" class="space-y-4"></div>
-            <div class="mt-8 border-t border-slate-800 pt-8 flex gap-4">
-                <button onclick="scanLibrary()" class="bg-sky-600 px-6 py-3 rounded-xl font-bold hover:bg-sky-500 transition-colors">FULL LIBRARY RE-SCAN</button>
-                <button onclick="triggerIngest()" class="bg-amber-600 px-6 py-3 rounded-xl font-bold hover:bg-amber-500 transition-colors">SCAN INGEST FOLDER</button>
-                <button onclick="clearQueue()" class="bg-rose-600 px-6 py-3 rounded-xl font-bold hover:bg-rose-500 transition-colors">PURGE QUEUE HISTORY</button>
+        <div id="tab-settings" class="hidden glass p-8 rounded-2xl border border-white/5 space-y-8">
+            <h2 class="font-black text-2xl uppercase tracking-tighter text-white">System Settings</h2>
+            
+            <div id="config-form" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <!-- Config inputs will be injected here -->
+            </div>
+            <button onclick="saveConfig()" class="bg-emerald-600 px-6 py-3 rounded-xl font-bold hover:bg-emerald-500 transition-colors">SAVE CONFIGURATION</button>
+
+            <div class="border-t border-white/10 pt-8 space-y-4" id="disk-info"></div>
+
+            <div class="mt-8 border-t border-white/10 pt-8 flex flex-wrap gap-4">
+                <button onclick="scanLibrary()" class="bg-sky-600 px-6 py-3 rounded-xl font-bold hover:bg-sky-500 transition-colors text-[10px] uppercase tracking-widest">Full Library Re-Scan</button>
+                <button onclick="triggerIngest()" class="bg-amber-600 px-6 py-3 rounded-xl font-bold hover:bg-amber-500 transition-colors text-[10px] uppercase tracking-widest">Scan Ingest Folder</button>
+                <button onclick="clearQueue()" class="bg-rose-600 px-6 py-3 rounded-xl font-bold hover:bg-rose-500 transition-colors text-[10px] uppercase tracking-widest">Purge Queue History</button>
             </div>
         </div>
     </div>
@@ -279,6 +295,7 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
             <div>
                 <h2 id="details-title" class="text-3xl font-black text-white uppercase tracking-tighter"></h2>
                 <div id="details-genres" class="flex gap-2 mt-2"></div>
+                <button id="details-subtitles-btn" class="hidden mt-4 bg-amber-600/20 text-amber-400 px-3 py-1 rounded text-[10px] font-bold uppercase hover:bg-amber-600 hover:text-white transition-colors" onclick="downloadSubtitlesForCurrent()">Fetch Subtitles</button>
             </div>
             <button onclick="closeItemDetails()" class="text-slate-400 hover:text-white font-bold text-xs border border-white/10 px-3 py-1 rounded">CLOSE</button>
         </div>
@@ -418,17 +435,23 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
             `).join('') : '<div class="col-span-5 text-center text-slate-500 py-20 uppercase font-bold text-xs tracking-widest">No shows tracked yet.</div>';
         }
 
+        async function performSemanticSearch() {
+            const prompt = document.getElementById('search-query').value; if(!prompt) return; showTab('search');
+            document.getElementById('tab-search').innerHTML = '<div class="col-span-5 text-center py-20 text-purple-400 uppercase font-black animate-pulse tracking-widest flex flex-col items-center gap-4"><svg class="w-12 h-12 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>AI is analyzing your request...</div>';
+            
+            const res = await fetch('/api/search/semantic', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt })
+            });
+            const data = await res.json();
+            renderSearchResults(data);
+        }
+
         async function performGlobalSearch() {
             const query = document.getElementById('search-query').value; if(!query) return; showTab('search');
+            document.getElementById('tab-search').innerHTML = '<div class="col-span-5 text-center py-20 text-slate-500 uppercase font-black animate-pulse tracking-widest">Searching...</div>';
             const res = await fetch('/api/search?q=' + encodeURIComponent(query)); const data = await res.json();
-            document.getElementById('tab-search').innerHTML = data.map(item => `
-                <div class="glass rounded-xl overflow-hidden p-4 border border-slate-800/50">
-                    <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-48 w-full object-cover rounded shadow-lg" onerror="this.src='${placeholder}'">
-                    <div class="mt-3 text-sm font-bold truncate">${item.title || item.name}</div>
-                    <div class="text-[10px] text-slate-500 mb-3">${item.release_date || item.first_air_date || 'Unknown'}</div>
-                    <button onclick="track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="w-full bg-sky-600/20 text-sky-400 py-2 rounded font-bold text-[10px] hover:bg-sky-600 hover:text-white transition-all uppercase tracking-widest">Track</button>
-                </div>
-            `).join('');
+            renderSearchResults(data);
         }
 
         async function openMatchModal(id, title) { 
@@ -537,7 +560,10 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
                 <div class="glass rounded-xl overflow-hidden p-4 border border-slate-800/50 text-center cursor-pointer group hover:border-sky-500/50 transition-all" onclick="openItemDetailsExternal('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.media_type}')">
                     <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-48 w-full object-cover rounded shadow-lg group-hover:scale-105 transition-transform" onerror="this.src='${placeholder}'">
                     <div class="mt-3 text-sm font-bold truncate">${item.title || item.name}</div>
-                    <button onclick="event.stopPropagation(); track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="text-sky-400 text-[10px] font-bold mt-2 hover:underline uppercase">Track</button>
+                    <div class="flex gap-2 mt-2">
+                        <button onclick="event.stopPropagation(); track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}', 'watchlist')" class="w-1/2 bg-slate-800 text-slate-400 py-2 rounded-lg font-black text-[8px] hover:bg-slate-700 hover:text-white transition-all uppercase tracking-widest">Watchlist</button>
+                        <button onclick="event.stopPropagation(); track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}', 'wanted')" class="w-1/2 bg-sky-600/20 text-sky-400 py-2 rounded-lg font-black text-[8px] hover:bg-sky-600 hover:text-white transition-all uppercase tracking-widest">Download</button>
+                    </div>
                 </div>
             `).join('');
         }
@@ -548,7 +574,10 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
                 <div class="glass rounded-xl overflow-hidden p-4 border border-slate-800/50 text-center cursor-pointer group hover:border-sky-500/50 transition-all" onclick="openItemDetailsExternal('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.media_type}')">
                     <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-48 w-full object-cover rounded shadow-lg group-hover:scale-105 transition-transform" onerror="this.src='${placeholder}'">
                     <div class="mt-3 text-sm font-bold truncate">${item.title || item.name}</div>
-                    <button onclick="event.stopPropagation(); track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="text-sky-400 text-[10px] font-bold mt-2 hover:underline uppercase">Track</button>
+                    <div class="flex gap-2 mt-2">
+                        <button onclick="event.stopPropagation(); track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}', 'watchlist')" class="w-1/2 bg-slate-800 text-slate-400 py-2 rounded-lg font-black text-[8px] hover:bg-slate-700 hover:text-white transition-all uppercase tracking-widest">Watchlist</button>
+                        <button onclick="event.stopPropagation(); track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}', 'wanted')" class="w-1/2 bg-sky-600/20 text-sky-400 py-2 rounded-lg font-black text-[8px] hover:bg-sky-600 hover:text-white transition-all uppercase tracking-widest">Download</button>
+                    </div>
                 </div>
             `).join('') : '<div class="col-span-5 text-center text-slate-500 py-20 uppercase font-bold text-xs tracking-widest">Rate some shows to get personalized recommendations!</div>';
         }
@@ -570,8 +599,36 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
             if(tab === 'upcoming') { fetchUpcoming(); fetchChips(); }
             if(tab === 'recommendations') { fetchRecommendations(); fetchChips(); }
             if(tab === 'activity') fetchActivity();
-            if(tab === 'settings') fetchDisks(); 
+            if(tab === 'settings') { fetchDisks(); fetchConfig(); }
             if(tab === 'calendar') fetchCalendar();
+        }
+
+        async function fetchConfig() {
+            const res = await fetch('/api/settings/config');
+            const config = await res.json();
+            const form = document.getElementById('config-form');
+            form.innerHTML = Object.entries(config).map(([key, val]) => `
+                <div class="flex flex-col gap-1">
+                    <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">${key.replace(/_/g, ' ')}</label>
+                    <input type="${key.includes('PASS') || key.includes('KEY') ? 'password' : 'text'}" id="cfg-${key}" value="${val}" class="bg-white/5 border border-white/10 rounded-xl px-4 py-3 outline-none focus:border-sky-500 text-sm font-mono text-slate-200">
+                </div>
+            `).join('');
+        }
+
+        async function saveConfig() {
+            const inputs = document.querySelectorAll('[id^="cfg-"]');
+            const config = {};
+            inputs.forEach(input => {
+                const key = input.id.replace('cfg-', '');
+                config[key] = input.value;
+            });
+            const res = await fetch('/api/settings/config', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(config)
+            });
+            if(await res.json()) {
+                alert('Configuration saved! You may need to restart NeurArr for all changes to take effect.');
+            }
         }
 
         async function fetchActivity() {
@@ -620,13 +677,16 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
 
         function renderSearchResults(data) {
             document.getElementById('tab-search').innerHTML = data.map(item => `
-                <div class="glass rounded-2xl overflow-hidden p-4 border border-white/5 group hover:border-sky-500/50 transition-all">
+                <div class="glass rounded-2xl overflow-hidden p-4 border border-white/5 group hover:border-sky-500/50 transition-all cursor-pointer" onclick="openItemDetailsExternal('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.media_type}')">
                     <div class="relative overflow-hidden rounded-xl">
                         <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-48 w-full object-cover group-hover:scale-110 transition-transform duration-500" onerror="this.src='${placeholder}'">
                     </div>
                     <div class="mt-4 text-sm font-bold truncate text-slate-200">${item.title || item.name}</div>
                     <div class="text-[10px] text-slate-500 mb-4">${item.release_date || item.first_air_date || 'Unknown'}</div>
-                    <button onclick="track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="w-full bg-sky-600/10 text-sky-400 py-3 rounded-xl font-black text-[10px] hover:bg-sky-600 hover:text-white transition-all uppercase tracking-widest">Track Item</button>
+                    <div class="flex gap-2">
+                        <button onclick="event.stopPropagation(); track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}', 'watchlist')" class="w-1/2 bg-slate-800 text-slate-400 py-2.5 rounded-xl font-black text-[9px] hover:bg-slate-700 hover:text-white transition-all uppercase tracking-widest">Watchlist</button>
+                        <button onclick="event.stopPropagation(); track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}', 'wanted')" class="w-1/2 bg-sky-600/20 text-sky-400 py-2.5 rounded-xl font-black text-[9px] hover:bg-sky-600 hover:text-white transition-all uppercase tracking-widest">Download</button>
+                    </div>
                 </div>
             `).join('');
         }
@@ -644,9 +704,13 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
             fetchTracked();
         }
 
+        let currentDetailsId = null;
+
         async function openItemDetails(id, title) {
+            currentDetailsId = id;
             document.getElementById('details-title').innerText = title;
             document.getElementById('item-details-modal').classList.add('active');
+            document.getElementById('details-subtitles-btn').classList.remove('hidden');
             
             const trackedRes = await fetch('/api/tracked');
             const tracked = await trackedRes.json();
@@ -659,8 +723,10 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         }
 
         async function openItemDetailsExternal(tmdbId, title, type) {
+            currentDetailsId = null;
             document.getElementById('details-title').innerText = title;
             document.getElementById('item-details-modal').classList.add('active');
+            document.getElementById('details-subtitles-btn').classList.add('hidden');
             
             // For external, we don't have the full local item yet, but we can fetch trailer/credits
             await loadDetails(`/api/external/${type}/${tmdbId}/trailers`, `/api/external/${type}/${tmdbId}/credits`, { genres: 'Loading...' });
@@ -716,6 +782,20 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         function closeItemDetails() { 
             document.getElementById('item-details-modal').classList.remove('active');
             document.getElementById('details-trailer').innerHTML = ''; // Stop video
+        }
+
+        async function downloadSubtitlesForCurrent() {
+            if(!currentDetailsId) return;
+            const btn = document.getElementById('details-subtitles-btn');
+            const originalText = btn.innerText;
+            btn.innerText = 'Searching...';
+            const res = await fetch(`/api/tracked/${currentDetailsId}/subtitles`, { method: 'POST' });
+            if(await res.json()) {
+                btn.innerText = 'Subtitles Fetched!';
+            } else {
+                btn.innerText = 'Failed/Not Found';
+            }
+            setTimeout(() => { btn.innerText = originalText; }, 3000);
         }
 
         async function fetchCalendar() {
@@ -802,6 +882,22 @@ async fn search_media(State(state): State<AppState>, Query(params): Query<Search
 #[derive(Deserialize)]
 struct SearchQuery { q: String }
 
+#[derive(Deserialize)]
+struct SemanticSearchRequest { prompt: String }
+
+async fn semantic_search(State(state): State<AppState>, Json(req): Json<SemanticSearchRequest>) -> Json<Vec<crate::integrations::tmdb::TmdbMedia>> {
+    if let Ok(query) = state.ollama.semantic_search_translate(&req.prompt).await {
+        info!("Semantic Search translated prompt '{}' to query '{}'", req.prompt, query);
+        let mut movies = state.tmdb.search_movie(&query, None).await.unwrap_or_default();
+        let mut tv = state.tmdb.search_tv(&query, None).await.unwrap_or_default();
+        for m in &mut movies { m.media_type = Some("movie".to_string()); }
+        for t in &mut tv { t.media_type = Some("tv".to_string()); }
+        movies.append(&mut tv);
+        return Json(movies);
+    }
+    Json(vec![])
+}
+
 async fn get_upcoming(State(state): State<AppState>) -> Json<Vec<crate::integrations::tmdb::TmdbMedia>> {
     let mut results = state.tmdb.get_upcoming_movies().await.unwrap_or_default();
     let mut tv = state.tmdb.get_trending_tv().await.unwrap_or_default();
@@ -821,7 +917,7 @@ async fn get_calendar(State(state): State<AppState>) -> Json<Vec<CalendarEpisode
 }
 
 #[derive(Deserialize)]
-struct TrackRequest { id: u32, title: String, poster_path: Option<String>, release_date: Option<String>, media_type: String }
+struct TrackRequest { id: u32, title: String, poster_path: Option<String>, release_date: Option<String>, media_type: String, status: String }
 
 async fn track_show(State(state): State<AppState>, Json(req): Json<TrackRequest>) -> Json<bool> {
     let mut genres_vec = Vec::new();
@@ -834,7 +930,7 @@ async fn track_show(State(state): State<AppState>, Json(req): Json<TrackRequest>
     }
     let genres_str = if genres_vec.is_empty() { None } else { Some(genres_vec.join(",")) };
 
-    match db::insert_tracked_show(&state.pool, &req.title, req.id, &req.media_type, req.poster_path, req.release_date, genres_str, total_seasons).await {
+    match db::insert_tracked_show(&state.pool, &req.title, req.id, &req.media_type, &req.status, req.poster_path, req.release_date, genres_str, total_seasons).await {
         Ok(_) => {
             // Trigger an immediate scan for this specific title
             let pool = state.pool.clone();
@@ -1082,7 +1178,6 @@ async fn trigger_ingest(State(state): State<AppState>) -> Json<bool> {
     let pool = state.pool.clone();
     let tmdb = state.tmdb.clone();
     let ollama = state.ollama.clone();
-    // We need a qbit client here too
     if let Ok(qbit) = crate::integrations::torrent::QBittorrentClient::new() {
         if qbit.login().await.is_ok() {
             let qbit_arc = Arc::new(qbit);
@@ -1093,6 +1188,34 @@ async fn trigger_ingest(State(state): State<AppState>) -> Json<bool> {
         }
     }
     Json(false)
+}
+
+async fn get_config() -> Json<std::collections::HashMap<String, String>> {
+    let keys = vec![
+        "TMDB_API_KEY", "OPENSUBTITLES_API_KEY", "INDEXER_URL", "INDEXER_API_KEY", 
+        "QBITTORRENT_URL", "QBITTORRENT_USER", "QBITTORRENT_PASS", 
+        "OLLAMA_BASE_URL", "OLLAMA_MODEL", "NEURARR_INGEST_DIR", "NEURARR_LIBRARY_DIR"
+    ];
+    let mut config = std::collections::HashMap::new();
+    for key in keys {
+        config.insert(key.to_string(), std::env::var(key).unwrap_or_default());
+    }
+    Json(config)
+}
+
+async fn update_config(Json(config): Json<std::collections::HashMap<String, String>>) -> Json<bool> {
+    let mut env_content = tokio::fs::read_to_string(".env").await.unwrap_or_default();
+    for (k, v) in config {
+        let re = regex::Regex::new(&format!(r"(?m)^{}=(.*)$", k)).unwrap();
+        if re.is_match(&env_content) {
+            env_content = re.replace(&env_content, format!("{}={}", k, v).as_str()).to_string();
+        } else {
+            env_content.push_str(&format!("\n{}={}", k, v));
+        }
+        unsafe { std::env::set_var(&k, &v); }
+    }
+    let _ = tokio::fs::write(".env", env_content).await;
+    Json(true)
 }
 
 async fn trigger_update() -> Json<bool> {
@@ -1276,4 +1399,26 @@ async fn get_external_credits(
         return Json(credits);
     }
     Json(crate::integrations::tmdb::TmdbCredits { cast: vec![] })
+}
+
+async fn fetch_subtitles_for_tracked(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Json<bool> {
+    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
+        if let Some(s) = tracked.iter().find(|t| t.id == id) {
+            if let Ok(sub_client) = crate::integrations::subtitles::SubtitleClient::new() {
+                let lib_dir = std::env::var("NEURARR_LIBRARY_DIR").unwrap_or_else(|_| "./library".to_string());
+                let mut dest = std::path::PathBuf::from(&lib_dir);
+                if s.media_type == "tv" { dest.push("TV"); } else { dest.push("Movies"); }
+                dest.push(&s.title);
+                dest.push(&s.title);
+                let _ = tokio::fs::create_dir_all(dest.parent().unwrap()).await;
+                if sub_client.download_subtitles(&s.title, &dest).await.is_ok() {
+                    return Json(true);
+                }
+            }
+        }
+    }
+    Json(false)
 }
