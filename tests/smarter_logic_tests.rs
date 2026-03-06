@@ -127,3 +127,32 @@ fn test_title_normalization_robustness() {
         assert_eq!(normalized, expected);
     }
 }
+
+#[test]
+fn test_search_year_extraction_logic() {
+    let re = regex::Regex::new(r"\s+(\d{4})$").unwrap();
+    
+    let cases = vec![
+        ("Pluribus 2025", "Pluribus", Some(2025)),
+        ("Sparticus 1960", "Sparticus", Some(1960)),
+        ("The Office", "The Office", None),
+        ("2012 Movie", "2012 Movie", None), // Should not match if not at end
+    ];
+
+    for (input, exp_title, exp_year) in cases {
+        let mut query = input.to_string();
+        let mut year = None;
+        
+        if let Some(caps) = re.captures(input) {
+            if let Some(y_match) = caps.get(1) {
+                if let Ok(y) = y_match.as_str().parse::<u32>() {
+                    year = Some(y);
+                    query = re.replace(input, "").to_string();
+                }
+            }
+        }
+        
+        assert_eq!(query, exp_title);
+        assert_eq!(year, exp_year);
+    }
+}

@@ -50,22 +50,28 @@ impl TmdbClient {
         })
     }
 
-    pub async fn search_movie(&self, query: &str) -> Result<Vec<TmdbMedia>> {
-        let url = format!(
+    pub async fn search_movie(&self, query: &str, year: Option<u32>) -> Result<Vec<TmdbMedia>> {
+        let mut url = format!(
             "https://api.themoviedb.org/3/search/movie?api_key={}&query={}",
             self.api_key,
             urlencoding::encode(query)
         );
+        if let Some(y) = year {
+            url.push_str(&format!("&primary_release_year={}", y));
+        }
         let response = self.client.get(&url).send().await?.json::<TmdbSearchResult>().await?;
         Ok(response.results)
     }
 
-    pub async fn search_tv(&self, query: &str) -> Result<Vec<TmdbMedia>> {
-        let url = format!(
+    pub async fn search_tv(&self, query: &str, year: Option<u32>) -> Result<Vec<TmdbMedia>> {
+        let mut url = format!(
             "https://api.themoviedb.org/3/search/tv?api_key={}&query={}",
             self.api_key,
             urlencoding::encode(query)
         );
+        if let Some(y) = year {
+            url.push_str(&format!("&first_air_date_year={}", y));
+        }
         let response = self.client.get(&url).send().await?.json::<TmdbSearchResult>().await?;
         Ok(response.results)
     }

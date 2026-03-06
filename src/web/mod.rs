@@ -718,8 +718,22 @@ async fn clear_queue(State(state): State<AppState>) -> Json<bool> {
 }
 
 async fn search_media(State(state): State<AppState>, Query(params): Query<SearchQuery>) -> Json<Vec<crate::integrations::tmdb::TmdbMedia>> {
-    let mut movies = state.tmdb.search_movie(&params.q).await.unwrap_or_default();
-    let mut tv = state.tmdb.search_tv(&params.q).await.unwrap_or_default();
+    let mut query = params.q.clone();
+    let mut year = None;
+
+    // Check for a 4-digit year at the end of the query
+    let re = regex::Regex::new(r"\s+(\d{4})$").unwrap();
+    if let Some(caps) = re.captures(&params.q) {
+        if let Some(y_match) = caps.get(1) {
+            if let Ok(y) = y_match.as_str().parse::<u32>() {
+                year = Some(y);
+                query = re.replace(&params.q, "").to_string();
+            }
+        }
+    }
+
+    let mut movies = state.tmdb.search_movie(&query, year).await.unwrap_or_default();
+    let mut tv = state.tmdb.search_tv(&query, year).await.unwrap_or_default();
     for m in &mut movies { m.media_type = Some("movie".to_string()); }
     for t in &mut tv { t.media_type = Some("tv".to_string()); }
     movies.append(&mut tv);

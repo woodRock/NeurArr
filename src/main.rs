@@ -674,7 +674,7 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
         if item.season.is_some() { tmdb.get_tv_details(id).await.ok() }
         else { tmdb.get_movie_details(id).await.ok() }
     } else {
-        let res = if item.season.is_some() { tmdb.search_tv(&item.title).await? } else { tmdb.search_movie(&item.title).await? };
+        let res = if item.season.is_some() { tmdb.search_tv(&item.title, None).await? } else { tmdb.search_movie(&item.title, None).await? };
         if let Some(m) = res.first() {
             if item.season.is_some() { tmdb.get_tv_details(m.id).await.ok() }
             else { tmdb.get_movie_details(m.id).await.ok() }
