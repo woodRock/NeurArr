@@ -230,7 +230,7 @@ pub async fn scan_library(pool: sqlx::SqlitePool) -> Result<()> {
                     
                     if !is_match {
                         if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, show.media_type == "tv").await {
-                            if alts.iter().any(|a| a.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "") == normalized_filename_title) {
+                            if alts.iter().any(|(_, a)| a.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "") == normalized_filename_title) {
                                 is_match = true;
                             }
                         }
@@ -296,7 +296,11 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
             queries.push(format!("{} {}", show.title, s_code));
             if !year_str.is_empty() { queries.push(format!("{} {} {}", show.title, year_str, s_code)); }
             if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, true).await {
-                for alt in alts { queries.push(format!("{} {}", alt, s_code)); }
+                for (iso, alt) in alts { 
+                    if ["US", "GB", "AU", "CA"].contains(&iso.as_str()) || alt.chars().all(|c| c.is_ascii()) {
+                        queries.push(format!("{} {}", alt, s_code)); 
+                    }
+                }
             }
             let mut found = false;
             for q in queries {
@@ -335,7 +339,11 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
             queries.push(format!("{} {}", show.title, ep_code));
             if !year_str.is_empty() { queries.push(format!("{} {} {}", show.title, year_str, ep_code)); }
             if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, true).await {
-                for alt in alts { queries.push(format!("{} {}", alt, ep_code)); }
+                for (iso, alt) in alts { 
+                    if ["US", "GB", "AU", "CA"].contains(&iso.as_str()) || alt.chars().all(|c| c.is_ascii()) {
+                        queries.push(format!("{} {}", alt, ep_code)); 
+                    }
+                }
             }
             let mut found = false;
             for q in queries {
@@ -378,7 +386,11 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
             queries.push(movie.title.clone());
             if !year_str.is_empty() { queries.push(format!("{} {}", movie.title, year_str)); }
             if let Ok(alts) = tmdb.get_alternative_titles(movie.tmdb_id as u32, false).await {
-                for alt in alts { queries.push(alt); }
+                for (iso, alt) in alts { 
+                    if ["US", "GB", "AU", "CA"].contains(&iso.as_str()) || alt.chars().all(|c| c.is_ascii()) {
+                        queries.push(alt); 
+                    }
+                }
             }
             let mut found = false;
             for q in queries {

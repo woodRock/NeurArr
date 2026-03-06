@@ -106,9 +106,13 @@ Rules:
             target_title, torrent_title
         );
         
-        let response = self.chat("You are a strict media matching expert.", &prompt, false).await?;
+        let response = self.chat("You are a strict media matching expert. Answer ONLY 'true' or 'false'.", &prompt, false).await?;
         let res_lower = response.to_lowercase();
         info!("LLM raw response for match: '{}'", res_lower);
+        
+        if res_lower.is_empty() {
+            return Ok(false);
+        }
         
         Ok(res_lower.contains("true") || (res_lower.contains("yes") && !res_lower.contains("no")))
     }

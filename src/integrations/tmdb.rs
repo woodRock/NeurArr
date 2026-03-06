@@ -171,7 +171,7 @@ impl TmdbClient {
         Ok(response)
     }
 
-    pub async fn get_alternative_titles(&self, id: u32, is_tv: bool) -> Result<Vec<String>> {
+    pub async fn get_alternative_titles(&self, id: u32, is_tv: bool) -> Result<Vec<(String, String)>> {
         let media_type = if is_tv { "tv" } else { "movie" };
         let url = format!(
             "https://api.themoviedb.org/3/{}/{}/alternative_titles?api_key={}",
@@ -184,9 +184,10 @@ impl TmdbClient {
         if let Some(results) = response.get("results").or(response.get("titles")) {
             if let Some(arr) = results.as_array() {
                 for item in arr {
+                    let iso = item.get("iso_3166_1").and_then(|v| v.as_str()).unwrap_or("??").to_string();
                     if let Some(title) = item.get("title").or(item.get("name")) {
                         if let Some(s) = title.as_str() {
-                            titles.push(s.to_string());
+                            titles.push((iso, s.to_string()));
                         }
                     }
                 }
