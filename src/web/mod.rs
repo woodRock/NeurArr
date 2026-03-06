@@ -65,6 +65,8 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         .route("/api/tracked/{id}/episodes", get(get_episodes))
         .route("/api/tracked/{id}/watched", post(mark_watched))
         .route("/api/tracked/{id}/rating", post(rate_item))
+        .route("/api/tracked/{id}/trailers", get(get_trailers))
+        .route("/api/tracked/{id}/credits", get(get_credits))
         .route("/api/episodes/{id}/status", post(set_episode_status))
         .route("/api/episodes/{id}/search", post(manual_search_episode))
         .route("/api/recommendations", get(get_recommendations))
@@ -217,6 +219,32 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         </div>
     </div></div>
 
+    <div id="item-details-modal" class="modal"><div class="glass p-8 rounded-3xl w-full max-w-6xl max-h-[90vh] overflow-y-auto">
+        <div class="flex justify-between items-start mb-6">
+            <div>
+                <h2 id="details-title" class="text-3xl font-black text-white uppercase tracking-tighter"></h2>
+                <div id="details-genres" class="flex gap-2 mt-2"></div>
+            </div>
+            <button onclick="closeItemDetails()" class="text-slate-400 hover:text-white font-bold text-xs border border-white/10 px-3 py-1 rounded">CLOSE</button>
+        </div>
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div class="lg:col-span-2 space-y-8">
+                <div id="details-trailer" class="aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-white/5"></div>
+                <div>
+                    <h3 class="text-sky-400 font-black text-xs uppercase mb-4 tracking-widest">Cast & Characters</h3>
+                    <div id="details-cast" class="grid grid-cols-3 md:grid-cols-5 gap-4"></div>
+                </div>
+            </div>
+            <div class="space-y-6">
+                <div id="details-overview" class="text-slate-300 text-sm leading-relaxed italic border-l-2 border-sky-500/30 pl-4"></div>
+                <div id="details-recommendations" class="space-y-4">
+                    <h3 class="text-sky-400 font-black text-xs uppercase tracking-widest">Similar Titles</h3>
+                    <div id="details-recs-list" class="space-y-2"></div>
+                </div>
+            </div>
+        </div>
+    </div></div>
+
     <script>
         let currentMatchId = null;
         let currentSearchEpisodeId = null;
@@ -323,6 +351,7 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
                         </div>
                         ${item.status === 'downloading' ? '<div class="text-[9px] font-black bg-sky-500/20 text-sky-400 px-1.5 py-0.5 rounded inline-block mt-1 uppercase animate-pulse">Downloading</div>' : ''}
                         ${item.status === 'watched' ? '<div class="text-[9px] font-black bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded inline-block mt-1 uppercase">Watched</div>' : ''}
+                        <button onclick="openItemDetails(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-xs text-sky-400 mt-1 font-bold uppercase hover:underline block">Details</button>
                         ${item.media_type === 'movie' ? 
                             `<button onclick="openInteractiveSearch('${item.title.replace(/'/g, "\\'")}', null, ${item.id})" class="text-xs text-amber-400 mt-1 font-bold uppercase hover:underline block">Manual Search</button>` :
                             `<button onclick="openEpisodeModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-xs text-sky-400 mt-1 font-bold uppercase hover:underline block">View Episodes</button>`
@@ -446,6 +475,67 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
                 body: JSON.stringify({ rating })
             });
             fetchTracked();
+        }
+
+        async function openItemDetails(id, title) {
+            document.getElementById('details-title').innerText = title;
+            document.getElementById('item-details-modal').classList.add('active');
+            document.getElementById('details-trailer').innerHTML = '<div class="flex items-center justify-center h-full text-slate-500 uppercase font-black tracking-widest animate-pulse">Loading Trailer...</div>';
+            document.getElementById('details-cast').innerHTML = '';
+            document.getElementById('details-recs-list').innerHTML = '';
+            
+            // Fetch everything in parallel
+            const [trailers, credits, tracked] = await Promise.all([
+                fetch(`/api/tracked/${id}/trailers`).then(r => r.json()),
+                fetch(`/api/tracked/${id}/credits`).then(r => r.json()),
+                fetch('/api/tracked').then(r => r.json())
+            ]);
+
+            const item = tracked.find(t => t.id === id);
+            if(item) {
+                document.getElementById('details-overview').innerText = "Plot: " + (item.genres ? `[${item.genres}] ` : '') + "Checking TMDB...";
+                // Get fresh details for overview if needed or use tracked info
+                document.getElementById('details-genres').innerHTML = (item.genres || '').split(',').map(g => `<span class="text-[9px] bg-sky-500/10 text-sky-400 px-2 py-0.5 rounded-full border border-sky-500/20 font-bold uppercase">${g.trim()}</span>`).join('');
+            }
+
+            // Render Trailer
+            if(trailers.length > 0) {
+                document.getElementById('details-trailer').innerHTML = `<iframe class="w-full h-full" src="https://www.youtube.com/embed/${trailers[0].key}" frameborder="0" allowfullscreen></iframe>`;
+            } else {
+                document.getElementById('details-trailer').innerHTML = '<div class="flex items-center justify-center h-full text-slate-700 uppercase font-black tracking-widest">No Trailer Available</div>';
+            }
+
+            // Render Cast
+            document.getElementById('details-cast').innerHTML = credits.cast.slice(0, 5).map(c => `
+                <div class="text-center">
+                    <img src="${c.profile_path ? `https://image.tmdb.org/t/p/w200${c.profile_path}` : placeholder}" class="w-full aspect-[2/3] object-cover rounded-lg mb-2 border border-white/5 shadow-lg">
+                    <div class="text-[10px] font-bold text-slate-200 truncate">${c.name}</div>
+                    <div class="text-[8px] text-slate-500 truncate">${c.character}</div>
+                </div>
+            `).join('');
+
+            // Get Similar Titles (using the global recs API for now or specific recommendations)
+            const recsRes = await fetch(`/api/recommendations`);
+            const recs = await recsRes.json();
+            document.getElementById('details-recs-list').innerHTML = recs.slice(0, 4).map(r => `
+                <div class="flex gap-3 items-center p-2 rounded-lg hover:bg-white/5 cursor-pointer border border-white/5" onclick="closeItemDetails(); performGlobalSearchDirect('${r.title || r.name}')">
+                    <img src="${r.poster_path ? `https://image.tmdb.org/t/p/w92${r.poster_path}` : placeholder}" class="w-8 h-12 rounded object-cover shadow-md">
+                    <div>
+                        <div class="text-[10px] font-bold text-slate-200">${r.title || r.name}</div>
+                        <div class="text-[8px] text-slate-500 uppercase">${r.media_type}</div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function performGlobalSearchDirect(q) {
+            document.getElementById('search-query').value = q;
+            performGlobalSearch();
+        }
+
+        function closeItemDetails() { 
+            document.getElementById('item-details-modal').classList.remove('active');
+            document.getElementById('details-trailer').innerHTML = ''; // Stop video
         }
 
         async function fetchCalendar() {
@@ -805,4 +895,26 @@ async fn get_preference_chips(State(state): State<AppState>) -> Json<Vec<String>
     chips.sort_by(|a, b| b.1.cmp(&a.1));
     
     Json(chips.into_iter().take(10).map(|(name, _)| name).collect())
+}
+
+async fn get_trailers(State(state): State<AppState>, Path(id): Path<i64>) -> Json<Vec<crate::integrations::tmdb::TmdbVideo>> {
+    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
+        if let Some(s) = tracked.iter().find(|t| t.id == id) {
+            if let Ok(videos) = state.tmdb.get_videos(s.tmdb_id as u32, s.media_type == "tv").await {
+                return Json(videos.into_iter().filter(|v| v.r#type == "Trailer").collect());
+            }
+        }
+    }
+    Json(vec![])
+}
+
+async fn get_credits(State(state): State<AppState>, Path(id): Path<i64>) -> Json<crate::integrations::tmdb::TmdbCredits> {
+    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
+        if let Some(s) = tracked.iter().find(|t| t.id == id) {
+            if let Ok(credits) = state.tmdb.get_credits(s.tmdb_id as u32, s.media_type == "tv").await {
+                return Json(credits);
+            }
+        }
+    }
+    Json(crate::integrations::tmdb::TmdbCredits { cast: vec![] })
 }

@@ -143,7 +143,51 @@ impl TmdbClient {
         Ok(response.genres)
     }
 
+    pub async fn get_videos(&self, id: u32, is_tv: bool) -> Result<Vec<TmdbVideo>> {
+        let media_type = if is_tv { "tv" } else { "movie" };
+        let url = format!(
+            "https://api.themoviedb.org/3/{}/{}/videos?api_key={}",
+            media_type, id, self.api_key
+        );
+        let response = self.client.get(&url).send().await?.json::<TmdbVideoResponse>().await?;
+        Ok(response.results)
+    }
+
+    pub async fn get_credits(&self, id: u32, is_tv: bool) -> Result<TmdbCredits> {
+        let media_type = if is_tv { "tv" } else { "movie" };
+        let url = format!(
+            "https://api.themoviedb.org/3/{}/{}/credits?api_key={}",
+            media_type, id, self.api_key
+        );
+        let response = self.client.get(&url).send().await?.json::<TmdbCredits>().await?;
+        Ok(response)
+    }
+
     pub async fn get_alternative_titles(&self, id: u32, is_tv: bool) -> Result<Vec<String>> {
+...
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TmdbVideo {
+    pub key: String,
+    pub site: String,
+    pub r#type: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TmdbVideoResponse {
+    pub results: Vec<TmdbVideo>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TmdbCredits {
+    pub cast: Vec<TmdbCast>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TmdbCast {
+    pub name: String,
+    pub character: String,
+    pub profile_path: Option<String>,
+}
         let media_type = if is_tv { "tv" } else { "movie" };
         let url = format!(
             "https://api.themoviedb.org/3/{}/{}/alternative_titles?api_key={}",

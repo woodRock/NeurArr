@@ -184,6 +184,7 @@ pub struct TrackedShow {
     pub genres: Option<String>,
     pub rating: i64,
     pub last_updated: String,
+    pub resolution: Option<String>,
 }
 
 pub async fn update_tracked_show_info(
@@ -210,18 +211,43 @@ pub async fn update_tracked_show_info(
 }
 
 pub async fn get_wanted_movies(pool: &SqlitePool) -> Result<Vec<TrackedShow>> {
+    let profile = get_default_quality_profile(pool).await?;
     let items = sqlx::query_as::<_, TrackedShow>(
         "SELECT * FROM tracked_shows 
-         WHERE media_type = 'movie' AND status = 'wanted'
+         WHERE media_type = 'movie' 
+         AND (status = 'wanted' OR (status = 'completed' AND resolution IS NOT NULL AND resolution != ?))
          AND (
             search_attempts < 3 
             OR last_searched_at IS NULL 
             OR last_searched_at < datetime('now', '-30 minutes')
          )"
     )
+    .bind(&profile.upgrade_until)
     .fetch_all(pool)
     .await?;
-    Ok(items)
+    
+    // Further filter in-memory to ensure we only upgrade if current < upgrade_until
+    let filtered = items.into_iter().filter(|m| {
+        if m.status == "completed" {
+            if let Some(res) = &m.resolution {
+                return is_better_resolution(&profile.upgrade_until, res);
+            }
+        }
+        true
+    }).collect();
+
+    Ok(filtered)
+}
+
+pub fn is_better_resolution(target: &str, current: &str) -> bool {
+    let rank = |r: &str| match r.to_lowercase().as_str() {
+        "2160p" | "4k" => 4,
+        "1080p" => 3,
+        "720p" => 2,
+        "480p" | "sd" => 1,
+        _ => 0,
+    };
+    rank(target) > rank(current)
 }
 
 pub async fn increment_movie_attempts(pool: &SqlitePool, id: i64) -> Result<()> {
@@ -299,19 +325,19 @@ pub async fn update_episode_status(pool: &SqlitePool, id: i64, status: &str) -> 
 }
 
 pub async fn get_wanted_episodes(pool: &SqlitePool) -> Result<Vec<(Episode, TrackedShow)>> {
-    // Join with tracked_shows to get the title for searching
-    // Implement back-off: only search if attempts < 3 OR last_searched_at < 30 mins ago
+    let profile = get_default_quality_profile(pool).await?;
     let rows = sqlx::query(
         "SELECT e.*, s.title as show_title, s.media_type, s.tmdb_id as show_tmdb_id, s.year as show_year 
          FROM episodes e 
          JOIN tracked_shows s ON e.show_id = s.id 
-         WHERE e.status = 'wanted' 
+         WHERE (e.status = 'wanted' OR (e.status = 'completed' AND e.resolution IS NOT NULL AND e.resolution != ?))
          AND (
             e.search_attempts < 3 
             OR e.last_searched_at IS NULL 
             OR e.last_searched_at < datetime('now', '-30 minutes')
          )"
     )
+    .bind(&profile.upgrade_until)
     .fetch_all(pool)
     .await?;
 
@@ -328,13 +354,21 @@ pub async fn get_wanted_episodes(pool: &SqlitePool) -> Result<Vec<(Episode, Trac
             air_date: r.get("air_date"),
             search_attempts: r.get("search_attempts"),
             last_searched_at: r.get("last_searched_at"),
+            resolution: r.get("resolution"),
         };
+        
+        if ep.status == "completed" {
+            if let Some(res) = &ep.resolution {
+                if !is_better_resolution(&profile.upgrade_until, res) { continue; }
+            }
+        }
+
         let show = TrackedShow {
             id: r.get("show_id"),
             title: r.get("show_title"),
             tmdb_id: r.get("show_tmdb_id"),
             media_type: r.get("media_type"),
-            status: "".to_string(), // not needed for search
+            status: "".to_string(),
             poster_path: None,
             release_date: None,
             added_at: "".to_string(),
@@ -344,6 +378,7 @@ pub async fn get_wanted_episodes(pool: &SqlitePool) -> Result<Vec<(Episode, Trac
             genres: None,
             rating: 0,
             last_updated: "".to_string(),
+            resolution: None,
         };
         results.push((ep, show));
     }
@@ -361,6 +396,7 @@ pub struct Episode {
     pub air_date: Option<String>,
     pub search_attempts: i64,
     pub last_searched_at: Option<String>,
+    pub resolution: Option<String>,
 }
 
 pub async fn increment_episode_attempts(pool: &SqlitePool, id: i64) -> Result<()> {
@@ -439,17 +475,18 @@ pub struct QualityProfile {
     pub max_resolution: String,
     pub must_contain: Option<String>,
     pub must_not_contain: Option<String>,
+    pub upgrade_until: String,
 }
 
 pub async fn get_default_quality_profile(pool: &SqlitePool) -> Result<QualityProfile> {
-    let profile = sqlx::query_as::<_, QualityProfile>("SELECT id, name, min_resolution, max_resolution, must_contain, must_not_contain FROM quality_profiles WHERE is_default = 1 LIMIT 1")
+    let profile = sqlx::query_as::<_, QualityProfile>("SELECT id, name, min_resolution, max_resolution, must_contain, must_not_contain, upgrade_until FROM quality_profiles WHERE is_default = 1 LIMIT 1")
         .fetch_one(pool)
         .await?;
     Ok(profile)
 }
 
 pub async fn get_all_quality_profiles(pool: &SqlitePool) -> Result<Vec<QualityProfile>> {
-    let profiles = sqlx::query_as::<_, QualityProfile>("SELECT id, name, min_resolution, max_resolution, must_contain, must_not_contain FROM quality_profiles")
+    let profiles = sqlx::query_as::<_, QualityProfile>("SELECT id, name, min_resolution, max_resolution, must_contain, must_not_contain, upgrade_until FROM quality_profiles")
         .fetch_all(pool)
         .await?;
     Ok(profiles)

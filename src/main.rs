@@ -654,7 +654,28 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
             let nfo_content = format!("<movie><title>{}</title><plot>{}</plot></movie>", m.title.as_deref().unwrap_or(&item.title), sf);
             let _ = tokio::fs::write(&nfo_file, nfo_content).await;
 
-            sqlx::query("UPDATE media_items SET status = 'completed' WHERE id = ?").bind(item_id).execute(&pool).await?;
+            // Fetch Subtitles
+            if let Ok(sub_client) = crate::integrations::subtitles::SubtitleClient::new() {
+                let _ = sub_client.download_subtitles(&item.original_filename, &dest_file).await;
+            }
+
+            sqlx::query("UPDATE media_items SET status = 'completed', resolution = ? WHERE id = ?").bind(quality).bind(item_id).execute(&pool).await?;
+            
+            // Update the tracked show or episode status and resolution
+            if item.season.is_some() {
+                sqlx::query("UPDATE episodes SET status = 'completed', resolution = ? WHERE show_id = (SELECT id FROM tracked_shows WHERE tmdb_id = ?) AND season = ? AND episode = ?")
+                    .bind(quality)
+                    .bind(m.id as i64)
+                    .bind(item.season)
+                    .bind(item.episode)
+                    .execute(&pool).await?;
+            } else {
+                sqlx::query("UPDATE tracked_shows SET status = 'completed', resolution = ? WHERE tmdb_id = ?")
+                    .bind(quality)
+                    .bind(m.id as i64)
+                    .execute(&pool).await?;
+            }
+
             if let Ok(plex) = integrations::plex::PlexClient::new() { let _ = plex.refresh_library().await; }
         }
     }
