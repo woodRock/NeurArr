@@ -560,8 +560,8 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
             title: filename.clone(), // Pipeline will use TMDB ID anyway
             season: None,
             episode: None,
-            resolution: "Unknown".to_string(),
-            source: "Indexer".to_string(),
+            resolution: Some("Unknown".to_string()),
+            source: Some("Indexer".to_string()),
         };
 
         if pending.media_type == "tv" {
@@ -578,7 +578,7 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
         }
 
         let id = db::insert_media_item(&pool, &filename, &metadata).await?;
-        let res = run_pipeline(id, path, pool, tmdb, ollama, Some(pending.tmdb_id as u32)).await;
+        let res = run_pipeline(id, path, pool.clone(), tmdb, ollama, Some(pending.tmdb_id as u32)).await;
         let _ = db::delete_pending_download(&pool, pending.id).await;
         return res;
     }
