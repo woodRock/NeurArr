@@ -35,6 +35,8 @@ enum Commands {
     Setup,
     /// Run the daemon (default)
     Run,
+    /// Update NeurArr to the latest version from GitHub
+    Update,
 }
 
 #[tokio::main]
@@ -61,6 +63,10 @@ async fn main() -> Result<()> {
             info!("3. Start NeurArr: cargo run");
             return Ok(());
         }
+        Some(Commands::Update) => {
+            update_app().await?;
+            return Ok(());
+        }
         _ => {
             run_daemon().await?;
         }
@@ -69,22 +75,61 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+async fn update_app() -> Result<()> {
+    info!("Starting NeurArr update process...");
+
+    info!("Pulling latest changes from GitHub...");
+    let status = std::process::Command::new("git")
+        .arg("pull")
+        .status()
+        .context("Failed to execute git pull. Is git installed?")?;
+
+    if !status.success() {
+        anyhow::bail!("Git pull failed. Please check your internet connection.");
+    }
+
+    info!("Building the latest version (this may take a minute)...");
+    let status = std::process::Command::new("cargo")
+        .args(["build", "--release"])
+        .status()
+        .context("Failed to execute cargo build.")?;
+
+    if !status.success() {
+        anyhow::bail!("Build failed. Please check the logs above.");
+    }
+
+    info!("Update successful! Restarting NeurArr...");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let mut args = std::env::args();
+        let cmd = args.next().unwrap();
+        let err = std::process::Command::new(cmd)
+            .args(args)
+            .exec();
+        return Err(anyhow::anyhow!("Failed to restart: {}", err));
+    }
+
+    #[cfg(windows)]
+    {
+        info!("On Windows, please manually restart the application to use the new version.");
+        std::process::exit(0);
+    }
+}
+
 async fn run_daemon() -> Result<()> {
     info!("NeurArr starting up with Ollama backend...");
 
-    // Initialize Database
     let pool = init_db().await?;
     info!("Database initialized");
 
-    // Initialize TMDB Client
     let tmdb_client = TmdbClient::new()?;
     info!("TMDB client initialized");
 
-    // Initialize Ollama Client
     let ollama = Arc::new(OllamaClient::new()?);
     info!("Ollama client ready");
 
-    // Get watch directory
     let watch_path = env::var("NEURARR_INGEST_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -102,13 +147,14 @@ async fn run_daemon() -> Result<()> {
 
     info!("Monitoring directory: {:?}", watch_path);
 
-    // Registry to prevent duplicate processing
     let processing_registry = Arc::new(Mutex::new(std::collections::HashSet::new()));
-    
-    // Limit AI processing to 1 concurrent task to save resources and avoid hangs
     let ai_semaphore = Arc::new(Semaphore::new(1));
 
-    let scanner_handle = async {
+    let scanner_pool = pool.clone();
+    let scanner_tmdb = tmdb_client.clone();
+    let scanner_ollama = ollama.clone();
+    
+    let scanner_handle = async move {
         let mut scanner = scanner;
         while let Some(event_res) = scanner.next_event().await {
             match event_res {
@@ -118,7 +164,6 @@ async fn run_daemon() -> Result<()> {
                         EventKind::Create(_) | EventKind::Modify(_) => {
                             for path in event.paths {
                                 if path.is_file() {
-                                    // Ignore hidden files
                                     if let Some(name) = path.file_name() {
                                         let name_str = name.to_string_lossy();
                                         if name_str.starts_with('.') || name_str.ends_with(".part") || name_str.ends_with(".tmp") {
@@ -133,16 +178,14 @@ async fn run_daemon() -> Result<()> {
                                     registry.insert(path.clone());
                                     drop(registry);
 
-                                    let pool = pool.clone();
-                                    let tmdb = tmdb_client.clone();
-                                    let ollama_clone = ollama.clone();
+                                    let pool = scanner_pool.clone();
+                                    let tmdb = scanner_tmdb.clone();
+                                    let ollama_clone = scanner_ollama.clone();
                                     let registry_clone = processing_registry.clone();
                                     let semaphore = ai_semaphore.clone();
                                     
                                     tokio::spawn(async move {
                                         let path_clone = path.clone();
-                                        
-                                        // Wait for our turn to use the AI
                                         let _permit = semaphore.acquire().await.ok();
                                         
                                         info!("Processing task started for {:?}", path_clone.file_name().unwrap_or_default());
@@ -150,7 +193,6 @@ async fn run_daemon() -> Result<()> {
                                             error!("Failed to process file: {}", e);
                                         }
                                         
-                                        // Cooldown period
                                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                                         registry_clone.lock().await.remove(&path_clone);
                                     });
@@ -179,61 +221,93 @@ async fn run_daemon() -> Result<()> {
         
         loop {
             info!("Running scheduled background checks...");
-            if let Ok(wanted) = crate::db::get_wanted_shows(&scheduler_pool).await {
-                for show in wanted {
-                    let mut search_queries = Vec::new();
-                    
-                    // Add primary title
+            
+            // 1. Sync episodes for tracked TV shows
+            if let Ok(tracked) = crate::db::get_tracked_shows(&scheduler_pool).await {
+                for show in tracked {
                     if show.media_type == "tv" {
-                        search_queries.push(format!("{} S01", show.title));
-                    } else {
-                        if let Some(y) = show.year {
-                            search_queries.push(format!("{} ({})", show.title, y));
-                        }
-                        search_queries.push(show.title.clone());
-                    }
+                        info!("Syncing episodes for show: {}", show.title);
+                        if let Ok(episodes) = tmdb.get_tv_season(show.tmdb_id as u32, 1).await {
+                            for ep in episodes {
+                                let already_aired = ep.air_date.as_ref().map(|d| {
+                                    let now = chrono::Utc::now().date_naive().to_string();
+                                    d <= &now
+                                }).unwrap_or(false);
 
-                    // Add alternative titles from TMDB
-                    if let Ok(alt_titles) = tmdb.get_alternative_titles(show.tmdb_id as u32, show.media_type == "tv").await {
-                        for alt in alt_titles {
-                            if show.media_type == "tv" {
-                                search_queries.push(format!("{} S01", alt));
-                            } else {
-                                search_queries.push(alt);
+                                if already_aired {
+                                    let _ = crate::db::insert_episode(
+                                        &scheduler_pool, 
+                                        show.id, 
+                                        ep.season_number, 
+                                        ep.episode_number, 
+                                        &ep.name, 
+                                        ep.air_date,
+                                        "wanted"
+                                    ).await;
+                                }
                             }
                         }
                     }
+                }
+            }
 
-                    let mut found = false;
-                    // Deduplicate queries
-                    let mut unique_queries: Vec<String> = search_queries.into_iter().collect();
-                    unique_queries.sort();
-                    unique_queries.dedup();
+            // 2. Search for wanted episodes (TV)
+            if let Ok(wanted_eps) = crate::db::get_wanted_episodes(&scheduler_pool).await {
+                for (ep, show) in wanted_eps {
+                    let ep_code = format!("S{:02}E{:02}", ep.season, ep.episode);
+                    let mut search_queries = Vec::new();
+                    search_queries.push(format!("{} {}", show.title, ep_code));
+                    
+                    if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, true).await {
+                        for alt in alts {
+                            search_queries.push(format!("{} {}", alt, ep_code));
+                        }
+                    }
 
-                    for query in unique_queries {
-                        info!("Searching indexers for: {}", query);
+                    for query in search_queries {
+                        info!("Searching for episode: {}", query);
                         if let Ok(results) = indexer.search(&query).await {
                             if let Some(best) = results.first() {
-                                info!("Found torrent for {}: {} ({} seeders)", show.title, best.title, best.seeders);
-                                
+                                info!("Found torrent for {}: {}", query, best.title);
                                 let ingest_abs = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
-                                let save_path = ingest_abs.to_string_lossy();
-                                
-                                if let Ok(_) = qbit.add_torrent_url(&best.link, Some(&save_path)).await {
-                                    let _ = crate::db::update_tracked_show_status(&scheduler_pool, show.id, "downloading").await;
-                                    found = true;
+                                if let Ok(_) = qbit.add_torrent_url(&best.link, Some(&ingest_abs.to_string_lossy())).await {
+                                    let _ = crate::db::update_episode_status(&scheduler_pool, ep.id, "downloading").await;
                                     break;
                                 }
                             }
                         }
                     }
-                    
-                    if !found {
-                        info!("No quality matches found for {} after all localized search passes.", show.title);
+                }
+            }
+
+            // 3. Search for wanted movies
+            if let Ok(wanted_movies) = crate::db::get_wanted_shows(&scheduler_pool).await {
+                for show in wanted_movies {
+                    if show.media_type != "movie" { continue; }
+                    let mut search_queries = Vec::new();
+                    if let Some(y) = show.year {
+                        search_queries.push(format!("{} ({})", show.title, y));
+                    }
+                    search_queries.push(show.title.clone());
+
+                    if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, false).await {
+                        for alt in alts { search_queries.push(alt); }
+                    }
+
+                    for query in search_queries {
+                        if let Ok(results) = indexer.search(&query).await {
+                            if let Some(best) = results.first() {
+                                let ingest_abs = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
+                                if let Ok(_) = qbit.add_torrent_url(&best.link, Some(&ingest_abs.to_string_lossy())).await {
+                                    let _ = crate::db::update_tracked_show_status(&scheduler_pool, show.id, "downloading").await;
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }
-            // Run every 1 hour
+
             tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
         }
     });
@@ -256,7 +330,6 @@ async fn process_file(
     let filename = path.file_name().unwrap().to_string_lossy();
     info!("New file detected: {}", filename);
 
-    // 1. Parse filename
     info!("Parsing filename...");
     let metadata = match ollama.parse_scene_release(&filename).await {
         Ok(llm_json) => {
@@ -278,7 +351,6 @@ async fn process_file(
 
     let item_id = db::insert_media_item(&pool, &filename, &metadata).await?;
 
-    // 2. Automated Pipeline
     run_pipeline(item_id, path, pool, tmdb, ollama, None).await
 }
 
@@ -292,10 +364,8 @@ pub async fn run_pipeline(
 ) -> Result<()> {
     let item = db::get_item_by_id(&pool, item_id).await?.context("Item not found")?;
     
-    // 1. Cross-Match with Tracked Shows and Manual History
     let mut final_tid = manual_tmdb_id;
     if final_tid.is_none() {
-        // A. Check Manual Match History (Highest Priority)
         if let Ok(Some((tid, _, poster))) = db::get_manual_match(&pool, &item.title).await {
             info!("Pipeline: Found manual match history for '{}', auto-matching to TMDB: {}", item.title, tid);
             final_tid = Some(tid);
@@ -304,7 +374,6 @@ pub async fn run_pipeline(
             }
         }
         
-        // B. Try to find a match in our tracked_shows
         if final_tid.is_none() {
             if let Ok(tracked) = db::get_tracked_shows(&pool).await {
                 for show in tracked {
@@ -323,7 +392,6 @@ pub async fn run_pipeline(
         }
     }
 
-    // 2. Get TMDB Metadata
     let media = if let Some(tid) = final_tid {
         if item.season.is_some() {
             tmdb.get_tv_details(tid).await.ok()
@@ -342,19 +410,16 @@ pub async fn run_pipeline(
     if let Some(media) = media {
         info!("Pipeline: Found TMDB match: {:?}", media.title.as_ref().or(media.name.as_ref()));
         
-        // Update poster
         if let Some(poster) = &media.poster_path {
             let _ = db::update_item_poster(&pool, item_id, poster).await;
         }
 
         if let Some(overview) = &media.overview {
-            // 2. Rewrite summary
             info!("Pipeline: Rewriting summary...");
             let spoiler_free = ollama.rewrite_summary(overview).await.unwrap_or_else(|_| overview.to_string());
 
             db::update_summaries(&pool, item_id, media.id, overview, &spoiler_free).await?;
             
-            // 3. Organization
             let library_dir = env::var("NEURARR_LIBRARY_DIR").unwrap_or_else(|_| "./library".to_string());
             let clean_title = item.title.replace(|c: char| !c.is_alphanumeric() && c != ' ', "").trim().to_string();
             let year = media.release_date.as_deref().unwrap_or("").split('-').next().unwrap_or("Unknown");
@@ -384,9 +449,12 @@ pub async fn run_pipeline(
             } else {
                 new_filename.push_str(&format!(" ({})", year));
             }
-            if let Some(res) = path.to_string_lossy().find("1080p").map(|_| "1080p").or(path.to_string_lossy().find("2160p").map(|_| "2160p")) {
-                new_filename.push_str(&format!(" [{}]", res));
-            }
+            
+            // Re-detect resolution for renaming if lost
+            let res = if path.to_string_lossy().contains("2160p") { " [2160p]" } 
+                     else if path.to_string_lossy().contains("1080p") { " [1080p]" } 
+                     else { "" };
+            new_filename.push_str(res);
             
             let dest_file = dest_dir.join(format!("{}.{}", new_filename, ext));
             let nfo_file = dest_dir.join(format!("{}.nfo", new_filename));
@@ -398,7 +466,6 @@ pub async fn run_pipeline(
                 }
             }
 
-            // Write NFO
             let nfo_content = format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\" ?>\n<movie>\n  <title>{}</title>\n  <plot>{}</plot>\n</movie>",
                 media.title.as_deref().unwrap_or(&item.title),
@@ -406,10 +473,8 @@ pub async fn run_pipeline(
             );
             let _ = tokio::fs::write(&nfo_file, nfo_content).await;
 
-            // 4. Update status to completed
             sqlx::query("UPDATE media_items SET status = 'completed' WHERE id = ?").bind(item_id).execute(&pool).await?;
 
-            // 5. Notify Plex
             if let Ok(plex) = crate::integrations::plex::PlexClient::new() {
                 let _ = plex.refresh_library().await;
             }

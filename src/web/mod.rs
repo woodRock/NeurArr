@@ -56,7 +56,11 @@ pub async fn start_web_server(pool: SqlitePool) -> Result<()> {
         .route("/api/track", post(track_show))
         .route("/api/tracked", get(get_tracked))
         .route("/api/tracked/{id}", delete(delete_tracked))
+        .route("/api/tracked/{id}/episodes", get(get_episodes))
+        .route("/api/episodes/{id}/status", post(set_episode_status))
+        .route("/api/episodes/{id}/search", post(manual_search_episode))
         .route("/api/sysinfo", get(get_sysinfo))
+        .route("/api/update", post(trigger_update))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
@@ -109,6 +113,7 @@ async fn dashboard() -> Html<&'static str> {
         <a id="nav-queue" onclick="showTab('queue')" class="active">Processing Queue</a>
         <a id="nav-upcoming" onclick="showTab('upcoming')">Upcoming & Trending</a>
         <a id="nav-tracked" onclick="showTab('tracked')">Tracked Shows</a>
+        <a onclick="updateApp()" style="color: #fbbf24">Update NeurArr</a>
         <div class="sysinfo">
             <span id="sys-cpu">CPU: 0%</span>
             <span id="sys-ram">RAM: 0 MB</span>
@@ -139,6 +144,14 @@ async fn dashboard() -> Html<&'static str> {
         <div id="tab-tracked" class="hidden">
             <h1 class="title">Tracked Shows</h1>
             <div id="tracked-grid" class="grid"></div>
+        </div>
+    </div>
+
+    <div id="episodes-modal" class="modal">
+        <div class="modal-content">
+            <h2 class="title" id="episode-modal-title">Episodes</h2>
+            <button class="btn btn-secondary" onclick="closeEpisodeModal()">Close</button>
+            <div id="episodes-list" style="margin-top: 1rem"></div>
         </div>
     </div>
 
@@ -273,15 +286,70 @@ async fn dashboard() -> Html<&'static str> {
                     <span class="status status-${item.status}">${item.status}</span>
                     <h2 class="title">${item.title}</h2>
                     <div style="color: #94a3b8; margin-bottom: 1rem;">Released: ${item.release_date || 'Unknown'}</div>
-                    <button class="btn btn-danger" onclick="deleteTracked(${item.id})">Stop Tracking</button>
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        ${item.media_type === 'tv' ? `<button class="btn" onclick="openEpisodeModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')">View Episodes</button>` : ''}
+                        <button class="btn btn-danger" style="margin-top:0" onclick="deleteTracked(${item.id})">Stop Tracking</button>
+                    </div>
                 </div>
             `).join('');
+        }
+
+        async function openEpisodeModal(id, title) {
+            document.getElementById('episode-modal-title').innerText = title + ' - Episodes';
+            document.getElementById('episodes-modal').classList.add('active');
+            fetchEpisodes(id);
+        }
+
+        function closeEpisodeModal() {
+            document.getElementById('episodes-modal').classList.remove('active');
+        }
+
+        async function fetchEpisodes(id) {
+            const res = await fetch(`/api/tracked/${id}/episodes`);
+            const data = await res.json();
+            const list = document.getElementById('episodes-list');
+            list.innerHTML = data.map(ep => `
+                <div style="padding: 1rem; background: #0f172a; margin-bottom: 0.5rem; border-radius: 0.5rem; display: flex; align-items: center; gap: 1rem;">
+                    <div style="flex-grow: 1">
+                        <strong>S${ep.season.toString().padStart(2, '0')}E${ep.episode.toString().padStart(2, '0')}</strong> - ${ep.title || 'Untitled'}
+                        <div style="font-size: 0.75rem; color: #94a3b8">Air Date: ${ep.air_date || 'Unknown'} | Status: ${ep.status}</div>
+                    </div>
+                    <button class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem" onclick="searchEpisode(${ep.id}, ${id})">Search</button>
+                    <select onchange="updateEpisodeStatus(${ep.id}, this.value, ${id})" style="background: #1e293b; color: white; border: 1px solid #334155; border-radius: 0.25rem">
+                        <option value="wanted" ${ep.status === 'wanted' ? 'selected' : ''}>Wanted</option>
+                        <option value="downloading" ${ep.status === 'downloading' ? 'selected' : ''}>Downloading</option>
+                        <option value="completed" ${ep.status === 'completed' ? 'selected' : ''}>Completed</option>
+                    </select>
+                </div>
+            `).join('');
+        }
+
+        async function updateEpisodeStatus(id, status, showId) {
+            await fetch(`/api/episodes/${id}/status`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status })
+            });
+            fetchEpisodes(showId);
+        }
+
+        async function searchEpisode(id, showId) {
+            await fetch(`/api/episodes/${id}/search`, { method: 'POST' });
+            alert('Manual search triggered for episode!');
+            fetchEpisodes(showId);
         }
 
         async function deleteTracked(id) {
             if (!confirm('Stop tracking this show?')) return;
             await fetch('/api/tracked/' + id, { method: 'DELETE' });
             fetchTracked();
+        }
+
+        async function updateApp() {
+            if (!confirm('Download latest version from GitHub and rebuild? This will restart the app.')) return;
+            await fetch('/api/update', { method: 'POST' });
+            alert('Update started! The app will rebuild and restart in the background. This page will refresh in 30 seconds.');
+            setTimeout(() => location.reload(), 30000);
         }
 
         async function fetchSysInfo() {
@@ -367,6 +435,49 @@ async fn track_show(State(state): State<AppState>, Json(req): Json<TrackRequest>
 async fn get_tracked(State(state): State<AppState>) -> Json<Vec<TrackedShow>> {
     let items = db::get_tracked_shows(&state.pool).await.unwrap_or_default();
     Json(items)
+}
+
+async fn get_episodes(State(state): State<AppState>, Path(id): Path<i64>) -> Json<Vec<db::Episode>> {
+    let items = db::get_episodes_for_show(&state.pool, id).await.unwrap_or_default();
+    Json(items)
+}
+
+#[derive(Deserialize)]
+struct StatusRequest { status: String }
+
+async fn set_episode_status(State(state): State<AppState>, Path(id): Path<i64>, Json(req): Json<StatusRequest>) -> Json<bool> {
+    let _ = db::update_episode_status(&state.pool, id, &req.status).await;
+    Json(true)
+}
+
+async fn manual_search_episode(State(state): State<AppState>, Path(id): Path<i64>) -> Json<bool> {
+    // This triggers a search immediately instead of waiting for the background loop
+    let pool = state.pool.clone();
+    tokio::spawn(async move {
+        let indexer = crate::integrations::indexer::IndexerClient::new().unwrap();
+        let qbit = crate::integrations::torrent::QBittorrentClient::new().unwrap();
+        let _tmdb = crate::integrations::tmdb::TmdbClient::new().unwrap();
+        let _ = qbit.login().await;
+
+        if let Ok(rows) = sqlx::query("SELECT e.*, s.title as show_title, s.tmdb_id as show_tmdb_id FROM episodes e JOIN tracked_shows s ON e.show_id = s.id WHERE e.id = ?").bind(id).fetch_all(&pool).await {
+            if let Some(r) = rows.first() {
+                use sqlx::Row;
+                let ep_code = format!("S{:02}E{:02}", r.get::<i64, _>("season"), r.get::<i64, _>("episode"));
+                let title: String = r.get("show_title");
+                let query = format!("{} {}", title, ep_code);
+                
+                if let Ok(results) = indexer.search(&query).await {
+                    if let Some(best) = results.first() {
+                        let ingest_abs = std::fs::canonicalize("./ingest").unwrap_or_else(|_| std::path::PathBuf::from("./ingest"));
+                        if let Ok(_) = qbit.add_torrent_url(&best.link, Some(&ingest_abs.to_string_lossy())).await {
+                            let _ = db::update_episode_status(&pool, id, "downloading").await;
+                        }
+                    }
+                }
+            }
+        }
+    });
+    Json(true)
 }
 
 #[derive(Deserialize)]
@@ -465,4 +576,19 @@ async fn get_sysinfo(State(state): State<AppState>) -> Json<SysInfo> {
         memory_used: sys.used_memory() / 1_048_576, // MB
         memory_total: sys.total_memory() / 1_048_576,
     })
+}
+
+async fn trigger_update() -> Json<bool> {
+    info!("Update triggered from dashboard!");
+    // We spawn a separate task to run the update so we can return the response immediately
+    tokio::spawn(async {
+        // We call our CLI update logic
+        // Since we are already in the binary, we just call the function
+        // Note: This requires making update_app public in main.rs or a shared module.
+        // For simplicity, I'll just trigger the CLI command.
+        let _ = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("update")
+            .spawn();
+    });
+    Json(true)
 }

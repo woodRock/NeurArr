@@ -193,6 +193,98 @@ pub async fn get_wanted_shows(pool: &SqlitePool) -> Result<Vec<TrackedShow>> {
     Ok(items)
 }
 
+pub async fn get_episodes_for_show(pool: &SqlitePool, show_id: i64) -> Result<Vec<Episode>> {
+    let items = sqlx::query_as::<_, Episode>("SELECT * FROM episodes WHERE show_id = ? ORDER BY season ASC, episode ASC")
+        .bind(show_id)
+        .fetch_all(pool)
+        .await?;
+    Ok(items)
+}
+
+pub async fn insert_episode(
+    pool: &SqlitePool,
+    show_id: i64,
+    season: u32,
+    episode: u32,
+    title: &str,
+    air_date: Option<String>,
+    status: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO episodes (show_id, season, episode, title, air_date, status)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(show_id, season, episode) DO UPDATE SET title = EXCLUDED.title, air_date = EXCLUDED.air_date"
+    )
+    .bind(show_id)
+    .bind(season)
+    .bind(episode)
+    .bind(title)
+    .bind(air_date)
+    .bind(status)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn update_episode_status(pool: &SqlitePool, id: i64, status: &str) -> Result<()> {
+    sqlx::query("UPDATE episodes SET status = ? WHERE id = ?")
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn get_wanted_episodes(pool: &SqlitePool) -> Result<Vec<(Episode, TrackedShow)>> {
+    // Join with tracked_shows to get the title for searching
+    let rows = sqlx::query(
+        "SELECT e.*, s.title as show_title, s.media_type, s.tmdb_id as show_tmdb_id, s.year as show_year 
+         FROM episodes e 
+         JOIN tracked_shows s ON e.show_id = s.id 
+         WHERE e.status = 'wanted'"
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut results = Vec::new();
+    for r in rows {
+        use sqlx::Row;
+        let ep = Episode {
+            id: r.get("id"),
+            show_id: r.get("show_id"),
+            season: r.get("season"),
+            episode: r.get("episode"),
+            title: r.get("title"),
+            status: r.get("status"),
+            air_date: r.get("air_date"),
+        };
+        let show = TrackedShow {
+            id: r.get("show_id"),
+            title: r.get("show_title"),
+            tmdb_id: r.get("show_tmdb_id"),
+            media_type: r.get("media_type"),
+            status: "".to_string(), // not needed for search
+            poster_path: None,
+            release_date: None,
+            added_at: "".to_string(),
+            year: r.get("show_year"),
+        };
+        results.push((ep, show));
+    }
+    Ok(results)
+}
+
+#[derive(sqlx::FromRow, serde::Serialize, Clone)]
+pub struct Episode {
+    pub id: i64,
+    pub show_id: i64,
+    pub season: i64,
+    pub episode: i64,
+    pub title: Option<String>,
+    pub status: String,
+    pub air_date: Option<String>,
+}
+
 pub async fn update_tracked_show_status(pool: &SqlitePool, id: i64, status: &str) -> Result<()> {
     sqlx::query("UPDATE tracked_shows SET status = ? WHERE id = ?")
         .bind(status)

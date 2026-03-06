@@ -95,6 +95,15 @@ impl TmdbClient {
         Ok(response.results)
     }
 
+    pub async fn get_tv_season(&self, id: u32, season: u32) -> Result<Vec<TmdbEpisode>> {
+        let url = format!(
+            "https://api.themoviedb.org/3/tv/{}/season/{}?api_key={}",
+            id, season, self.api_key
+        );
+        let response = self.client.get(&url).send().await?.json::<TmdbSeasonResponse>().await?;
+        Ok(response.episodes)
+    }
+
     pub async fn get_alternative_titles(&self, id: u32, is_tv: bool) -> Result<Vec<String>> {
         let media_type = if is_tv { "tv" } else { "movie" };
         let url = format!(
@@ -118,4 +127,19 @@ impl TmdbClient {
         }
         Ok(titles)
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TmdbSeasonResponse {
+    pub episodes: Vec<TmdbEpisode>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TmdbEpisode {
+    pub id: u32,
+    pub name: String,
+    pub episode_number: u32,
+    pub season_number: u32,
+    pub air_date: Option<String>,
+    pub overview: Option<String>,
 }
