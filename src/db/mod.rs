@@ -137,15 +137,16 @@ pub async fn insert_tracked_show(
     poster_path: Option<String>,
     release_date: Option<String>,
     genres: Option<String>,
+    total_seasons: u32,
 ) -> Result<()> {
     let year = release_date.as_deref()
         .and_then(|d| d.split('-').next())
         .and_then(|y| y.parse::<i32>().ok());
 
     sqlx::query(
-        "INSERT INTO tracked_shows (title, tmdb_id, media_type, status, poster_path, release_date, year, genres)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(tmdb_id) DO UPDATE SET status = 'wanted'"
+        "INSERT INTO tracked_shows (title, tmdb_id, media_type, status, poster_path, release_date, year, genres, total_seasons)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(tmdb_id) DO UPDATE SET status = 'wanted', total_seasons = EXCLUDED.total_seasons"
     )
     .bind(title)
     .bind(tmdb_id)
@@ -155,6 +156,7 @@ pub async fn insert_tracked_show(
     .bind(release_date)
     .bind(year)
     .bind(genres)
+    .bind(total_seasons as i64)
     .execute(pool)
     .await?;
 
@@ -185,6 +187,7 @@ pub struct TrackedShow {
     pub rating: i64,
     pub last_updated: String,
     pub resolution: Option<String>,
+    pub total_seasons: i64,
 }
 
 pub async fn update_tracked_show_info(
@@ -540,6 +543,7 @@ pub struct PendingDownload {
     pub episode_id: Option<i64>,
     pub tmdb_id: i64,
     pub media_type: String,
+    pub season: Option<i64>,
 }
 
 pub async fn insert_pending_download(
@@ -549,10 +553,11 @@ pub async fn insert_pending_download(
     episode_id: Option<i64>,
     tmdb_id: u32,
     media_type: &str,
+    season: Option<i64>,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO pending_downloads (torrent_name, show_id, episode_id, tmdb_id, media_type)
-         VALUES (?, ?, ?, ?, ?)
+        "INSERT INTO pending_downloads (torrent_name, show_id, episode_id, tmdb_id, media_type, season)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(torrent_name) DO UPDATE SET tmdb_id = EXCLUDED.tmdb_id"
     )
     .bind(name)
@@ -560,6 +565,7 @@ pub async fn insert_pending_download(
     .bind(episode_id)
     .bind(tmdb_id)
     .bind(media_type)
+    .bind(season)
     .execute(pool)
     .await?;
     Ok(())
@@ -583,6 +589,65 @@ pub async fn get_pending_download(pool: &SqlitePool, filename: &str) -> Result<O
 pub async fn delete_pending_download(pool: &SqlitePool, id: i64) -> Result<()> {
     sqlx::query("DELETE FROM pending_downloads WHERE id = ?")
         .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn get_needed_seasons(pool: &SqlitePool) -> Result<Vec<(i64, TrackedShow)>> {
+    // A season is "needed" if:
+    // 1. It has episodes marked as 'wanted'
+    // 2. ALL episodes in that season have already aired (so a full pack likely exists)
+    // 3. No episodes in that season are already 'downloading'
+    
+    let rows = sqlx::query(
+        "SELECT DISTINCT e.season, s.* 
+         FROM episodes e 
+         JOIN tracked_shows s ON e.show_id = s.id 
+         WHERE e.status = 'wanted'
+         AND NOT EXISTS (
+            SELECT 1 FROM episodes e2 
+            WHERE e2.show_id = e.show_id 
+            AND e2.season = e.season 
+            AND (e2.air_date IS NULL OR e2.air_date > date('now') OR e2.status = 'downloading')
+         )
+         LIMIT 10"
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut results = Vec::new();
+    for r in rows {
+        use sqlx::Row;
+        let season: i64 = r.get(0);
+        let show = TrackedShow {
+            id: r.get("id"),
+            title: r.get("title"),
+            tmdb_id: r.get("tmdb_id"),
+            media_type: r.get("media_type"),
+            status: r.get("status"),
+            poster_path: r.get("poster_path"),
+            release_date: r.get("release_date"),
+            added_at: r.get("added_at"),
+            year: r.get("year"),
+            search_attempts: r.get("search_attempts"),
+            last_searched_at: r.get("last_searched_at"),
+            genres: r.get("genres"),
+            rating: r.get("rating"),
+            last_updated: r.get("last_updated"),
+            resolution: r.get("resolution"),
+            total_seasons: r.get("total_seasons"),
+        };
+        results.push((season, show));
+    }
+    Ok(results)
+}
+
+pub async fn update_season_status(pool: &SqlitePool, show_id: i64, season: i64, status: &str) -> Result<()> {
+    sqlx::query("UPDATE episodes SET status = ? WHERE show_id = ? AND season = ? AND status != 'completed'")
+        .bind(status)
+        .bind(show_id)
+        .bind(season)
         .execute(pool)
         .await?;
     Ok(())

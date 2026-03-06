@@ -289,7 +289,44 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
 
             let profile = db::get_default_quality_profile(&scheduler_pool).await.ok();
 
-            
+            // 1. Check for Season Packs
+            if let Ok(needed_seasons) = db::get_needed_seasons(&scheduler_pool).await {
+                for (season_num, show) in needed_seasons {
+                    let s_code = format!("S{:02}", season_num);
+                    let mut queries = vec![format!("{} {}", show.title, s_code)];
+                    if let Ok(alts) = scheduler_tmdb.get_alternative_titles(show.tmdb_id as u32, true).await {
+                        for alt in alts { queries.push(format!("{} {}", alt, s_code)); }
+                    }
+                    
+                    let mut found = false;
+                    for q in queries {
+                        if found { break; }
+                        if let Ok(res) = indexer.search(&q).await {
+                            // Filter for season pack specific keywords
+                            let filtered: Vec<_> = res.into_iter().filter(|r| {
+                                let t = r.title.to_lowercase();
+                                t.contains(&s_code.to_lowercase()) && 
+                                (t.contains("complete") || t.contains("season") || !t.contains("e0"))
+                            }).collect();
+
+                            for best in filtered {
+                                if let Ok(true) = scheduler_ollama.verify_torrent_match(&show.title, &best.title).await {
+                                    info!("Season pack found: {}", best.title);
+                                    let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
+                                    if scheduler_qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
+                                        send_notification("NeurArr", &format!("Downloading Season Pack: {} {}", show.title, s_code));
+                                        let _ = db::update_season_status(&scheduler_pool, show.id, season_num, "downloading").await;
+                                        let _ = db::insert_pending_download(&scheduler_pool, &best.title, Some(show.id), None, show.tmdb_id as u32, "tv", Some(season_num)).await;
+                                        found = true; break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if found { tokio::time::sleep(std::time::Duration::from_secs(5)).await; }
+                }
+            }
+
             if let Ok(tracked) = db::get_tracked_shows(&scheduler_pool).await {
                 for show in tracked {
                     if show.media_type == "tv" {
@@ -631,8 +668,10 @@ pub async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClien
         };
 
         if pending.media_type == "tv" {
-            // Need to get season/episode from database if we have episode_id
-            if let Some(eid) = pending.episode_id {
+            if let Some(s) = pending.season {
+                metadata.season = Some(s as u32);
+                metadata.episode = None; // It's a whole season
+            } else if let Some(eid) = pending.episode_id {
                 if let Ok(rows) = sqlx::query("SELECT season, episode FROM episodes WHERE id = ?").bind(eid).fetch_all(&pool).await {
                     if let Some(r) = rows.first() {
                         use sqlx::Row;
@@ -660,6 +699,35 @@ pub async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClien
 
 pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, manual_id: Option<u32>) -> Result<()> {
     let item = db::get_item_by_id(&pool, item_id).await?.context("not found")?;
+    
+    // Handle Directory (Season Packs)
+    if path.is_dir() {
+        info!("Processing directory as season pack: {:?}", path);
+        for entry in WalkDir::new(&path).into_iter().filter_map(|e| e.ok()) {
+            if entry.file_type().is_file() {
+                let f_path = entry.path().to_path_buf();
+                let f_name = f_path.file_name().unwrap().to_string_lossy().to_string();
+                let ext = f_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+                if !["mkv", "mp4", "avi", "mov"].contains(&ext) { continue; }
+
+                // Parse individual episode from filename within season pack
+                let ep_metadata = match ollama.parse_scene_release(&f_name).await {
+                    Ok(json) => Parser::parse_llm_json(&json).unwrap_or_else(|_| Parser::parse_regex(&f_name)),
+                    Err(_) => Parser::parse_regex(&f_name),
+                };
+                
+                // If it's a season pack, ensure we use the known season if parsing failed
+                let mut final_meta = ep_metadata;
+                if final_meta.season.is_none() { final_meta.season = item.season.map(|s| s as u32); }
+                if final_meta.title == "Unknown" { final_meta.title = item.title.clone(); }
+
+                let id = db::insert_media_item(&pool, &f_name, &final_meta).await?;
+                let _ = Box::pin(run_pipeline(id, f_path, pool.clone(), tmdb.clone(), ollama.clone(), manual_id)).await;
+            }
+        }
+        return Ok(());
+    }
+
     let mut tid = manual_id;
     if tid.is_none() {
         if let Ok(Some((h_id, _, _))) = db::get_manual_match(&pool, &item.title).await { tid = Some(h_id); }

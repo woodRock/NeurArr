@@ -766,14 +766,16 @@ struct TrackRequest { id: u32, title: String, poster_path: Option<String>, relea
 
 async fn track_show(State(state): State<AppState>, Json(req): Json<TrackRequest>) -> Json<bool> {
     let mut genres_vec = Vec::new();
+    let mut total_seasons = 1;
     if let Ok(details) = if req.media_type == "tv" { state.tmdb.get_tv_details(req.id).await } else { state.tmdb.get_movie_details(req.id).await } {
         if let Some(gs) = details.genres {
             for g in gs { genres_vec.push(g.name); }
         }
+        total_seasons = details.number_of_seasons.unwrap_or(1);
     }
     let genres_str = if genres_vec.is_empty() { None } else { Some(genres_vec.join(",")) };
 
-    match db::insert_tracked_show(&state.pool, &req.title, req.id, &req.media_type, req.poster_path, req.release_date, genres_str).await {
+    match db::insert_tracked_show(&state.pool, &req.title, req.id, &req.media_type, req.poster_path, req.release_date, genres_str, total_seasons).await {
         Ok(_) => {
             // Trigger an immediate scan for this specific title
             let pool = state.pool.clone();
