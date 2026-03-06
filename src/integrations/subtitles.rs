@@ -1,9 +1,9 @@
-use anyhow::{Result, Context};
+use anyhow::Result;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::env;
 use std::path::PathBuf;
-use tracing::{info, error};
+use tracing::info;
 
 pub struct SubtitleClient {
     client: Client,
@@ -17,14 +17,14 @@ struct OpenSubtitlesSearchResponse {
 
 #[derive(Deserialize, Debug)]
 struct SubtitleData {
-    id: String,
+    _id: String,
     attributes: SubtitleAttributes,
 }
 
 #[derive(Deserialize, Debug)]
 struct SubtitleAttributes {
-    release: String,
-    language: String,
+    _release: String,
+    _language: String,
     files: Vec<SubtitleFile>,
 }
 
