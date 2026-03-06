@@ -114,7 +114,7 @@ Rules:
     }
 
     pub async fn semantic_search_translate(&self, prompt: &str) -> Result<String> {
-        let system = "You are a movie recommendation engine. Extract the core search keywords from the user's prompt. Reply ONLY with a single search query string (max 4 words) that would work well in a traditional movie database search engine. Do not use quotes or explanations.";
+        let system = "You are a movie and TV recommendation expert. Based on the user's description, identify 5 specific movies or TV shows that perfectly match the request. Return ONLY the titles as a comma-separated list. No explanations, no numbering, no extra text.";
         self.chat(system, prompt, false).await
     }
 }

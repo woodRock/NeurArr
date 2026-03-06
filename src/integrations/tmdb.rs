@@ -18,6 +18,7 @@ pub struct TmdbMedia {
     pub first_air_date: Option<String>,
     pub media_type: Option<String>,
     pub poster_path: Option<String>,
+    pub backdrop_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -30,6 +31,7 @@ pub struct TmdbMediaFull {
     pub release_date: Option<String>,
     pub first_air_date: Option<String>,
     pub poster_path: Option<String>,
+    pub backdrop_path: Option<String>,
     pub genres: Option<Vec<TmdbGenre>>,
 }
 
