@@ -554,7 +554,7 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
     
     // Check if we already know what this file is (pre-match)
     if let Ok(Some(pending)) = db::get_pending_download(&pool, &filename).await {
-        info!("Matched pending download for: {}. Skipping AI parsing.", filename);
+        info!("Matched pending download for: {} (registered as: {}, show_id: {:?}). Skipping AI parsing.", filename, pending.torrent_name, pending.show_id);
         // Create a minimal metadata object based on what we know
         let mut metadata = crate::parser::MediaMetadata {
             title: filename.clone(), // Pipeline will use TMDB ID anyway
