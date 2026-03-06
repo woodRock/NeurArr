@@ -440,7 +440,7 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                             send_notification("NeurArr", &format!("Downloading: {}", best.title));
                                             let _ = db::update_episode_status(&scheduler_pool, ep.id, "downloading").await;
                                             let _ = db::reset_episode_attempts(&scheduler_pool, ep.id).await;
-                                            let _ = db::insert_pending_download(&scheduler_pool, &best.title, Some(show.id), Some(ep.id), show.tmdb_id as u32, "tv").await;
+                                            let _ = db::insert_pending_download(&scheduler_pool, &best.title, Some(show.id), Some(ep.id), show.tmdb_id as u32, "tv", None).await;
                                             found = true; break;
                                         }
  else {
@@ -542,7 +542,7 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                             send_notification("NeurArr", &format!("Downloading Movie: {}", best.title));
                                             let _ = db::update_tracked_show_status(&scheduler_pool, movie.id, "downloading").await;
                                             let _ = db::reset_movie_attempts(&scheduler_pool, movie.id).await;
-                                            let _ = db::insert_pending_download(&scheduler_pool, &best.title, Some(movie.id), None, movie.tmdb_id as u32, "movie").await;
+                                            let _ = db::insert_pending_download(&scheduler_pool, &best.title, Some(movie.id), None, movie.tmdb_id as u32, "movie", None).await;
                                             found = true; break;
                                         }
                                     }

@@ -1083,14 +1083,14 @@ async fn download_torrent(State(state): State<AppState>, Json(req): Json<Downloa
             if let Ok(rows) = sqlx::query("SELECT s.tmdb_id, s.media_type, s.id as sid FROM episodes e JOIN tracked_shows s ON e.show_id = s.id WHERE e.id = ?").bind(eid).fetch_all(&state.pool).await {
                 if let Some(r) = rows.first() {
                     use sqlx::Row;
-                    let _ = db::insert_pending_download(&state.pool, &req.title, Some(r.get::<i64, _>("sid")), Some(eid), r.get::<i64, _>("tmdb_id") as u32, &r.get::<String, _>("media_type")).await;
+                    let _ = db::insert_pending_download(&state.pool, &req.title, Some(r.get::<i64, _>("sid")), Some(eid), r.get::<i64, _>("tmdb_id") as u32, &r.get::<String, _>("media_type"), None).await;
                 }
             }
         } else if let Some(sid) = req.show_id {
             let _ = db::update_tracked_show_status(&state.pool, sid, "downloading").await;
             if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
                 if let Some(s) = tracked.iter().find(|t| t.id == sid) {
-                    let _ = db::insert_pending_download(&state.pool, &req.title, Some(sid), None, s.tmdb_id as u32, &s.media_type).await;
+                    let _ = db::insert_pending_download(&state.pool, &req.title, Some(sid), None, s.tmdb_id as u32, &s.media_type, None).await;
                 }
             }
         }

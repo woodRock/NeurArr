@@ -382,6 +382,7 @@ pub async fn get_wanted_episodes(pool: &SqlitePool) -> Result<Vec<(Episode, Trac
             rating: 0,
             last_updated: "".to_string(),
             resolution: None,
+            total_seasons: r.get("total_seasons"),
         };
         results.push((ep, show));
     }

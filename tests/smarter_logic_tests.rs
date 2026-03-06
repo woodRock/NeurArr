@@ -156,3 +156,24 @@ fn test_search_year_extraction_logic() {
         assert_eq!(year, exp_year);
     }
 }
+
+#[test]
+fn test_recursive_ingestion_file_check() {
+    let test_files = vec![
+        "Season 1/Show S01E01.mkv",
+        "Show S01E02.mp4",
+        "random_file.txt",
+        "folder/subfolder/ep.avi",
+    ];
+
+    let mut video_files = Vec::new();
+    for f in test_files {
+        let ext = f.split('.').last().unwrap_or("");
+        if ["mkv", "mp4", "avi", "mov"].contains(&ext) {
+            video_files.push(f);
+        }
+    }
+
+    assert_eq!(video_files.len(), 3);
+    assert!(video_files.contains(&"Season 1/Show S01E01.mkv"));
+}
