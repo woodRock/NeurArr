@@ -393,8 +393,10 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                             send_notification("NeurArr", &format!("Downloading: {}", best.title));
                                             let _ = db::update_episode_status(&scheduler_pool, ep.id, "downloading").await;
                                             let _ = db::reset_episode_attempts(&scheduler_pool, ep.id).await;
+                                            let _ = db::insert_pending_download(&scheduler_pool, &best.title, Some(show.id), Some(ep.id), show.tmdb_id as u32, "tv").await;
                                             found = true; break;
-                                        } else {
+                                        }
+ else {
                                             error!("Failed to add torrent to qbit: {}", best.title);
                                         }
                                     } else {
@@ -478,6 +480,7 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                             send_notification("NeurArr", &format!("Downloading Movie: {}", best.title));
                                             let _ = db::update_tracked_show_status(&scheduler_pool, movie.id, "downloading").await;
                                             let _ = db::reset_movie_attempts(&scheduler_pool, movie.id).await;
+                                            let _ = db::insert_pending_download(&scheduler_pool, &best.title, Some(movie.id), None, movie.tmdb_id as u32, "movie").await;
                                             found = true; break;
                                         }
                                     }
@@ -548,6 +551,39 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
     }
     
     let filename = path.file_name().unwrap().to_string_lossy().to_string();
+    
+    // Check if we already know what this file is (pre-match)
+    if let Ok(Some(pending)) = db::get_pending_download(&pool, &filename).await {
+        info!("Matched pending download for: {}. Skipping AI parsing.", filename);
+        // Create a minimal metadata object based on what we know
+        let mut metadata = crate::parser::MediaMetadata {
+            title: filename.clone(), // Pipeline will use TMDB ID anyway
+            season: None,
+            episode: None,
+            resolution: "Unknown".to_string(),
+            source: "Indexer".to_string(),
+        };
+
+        if pending.media_type == "tv" {
+            // Need to get season/episode from database if we have episode_id
+            if let Some(eid) = pending.episode_id {
+                if let Ok(rows) = sqlx::query("SELECT season, episode FROM episodes WHERE id = ?").bind(eid).fetch_all(&pool).await {
+                    if let Some(r) = rows.first() {
+                        use sqlx::Row;
+                        metadata.season = Some(r.get::<i64, _>("season") as u32);
+                        metadata.episode = Some(r.get::<i64, _>("episode") as u32);
+                    }
+                }
+            }
+        }
+
+        let id = db::insert_media_item(&pool, &filename, &metadata).await?;
+        let res = run_pipeline(id, path, pool, tmdb, ollama, Some(pending.tmdb_id as u32)).await;
+        let _ = db::delete_pending_download(&pool, pending.id).await;
+        return res;
+    }
+
+    info!("No pending match for {}. Running AI ingestion.", filename);
     let metadata = match ollama.parse_scene_release(&filename).await {
         Ok(json) => Parser::parse_llm_json(&json).unwrap_or_else(|_| Parser::parse_regex(&filename)),
         Err(_) => Parser::parse_regex(&filename),

@@ -463,3 +463,59 @@ pub async fn get_manual_match(pool: &SqlitePool, parsed_title: &str) -> Result<O
         Ok(None)
     }
 }
+
+#[derive(sqlx::FromRow, Debug)]
+pub struct PendingDownload {
+    pub id: i64,
+    pub torrent_name: String,
+    pub show_id: Option<i64>,
+    pub episode_id: Option<i64>,
+    pub tmdb_id: i64,
+    pub media_type: String,
+}
+
+pub async fn insert_pending_download(
+    pool: &SqlitePool,
+    name: &str,
+    show_id: Option<i64>,
+    episode_id: Option<i64>,
+    tmdb_id: u32,
+    media_type: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO pending_downloads (torrent_name, show_id, episode_id, tmdb_id, media_type)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(torrent_name) DO UPDATE SET tmdb_id = EXCLUDED.tmdb_id"
+    )
+    .bind(name)
+    .bind(show_id)
+    .bind(episode_id)
+    .bind(tmdb_id)
+    .bind(media_type)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_pending_download(pool: &SqlitePool, filename: &str) -> Result<Option<PendingDownload>> {
+    // Try to find a pending download where the torrent_name is a substring of the filename or vice versa
+    let row = sqlx::query_as::<_, PendingDownload>(
+        "SELECT * FROM pending_downloads 
+         WHERE ? LIKE '%' || torrent_name || '%' 
+         OR torrent_name LIKE '%' || ? || '%' 
+         LIMIT 1"
+    )
+    .bind(filename)
+    .bind(filename)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+pub async fn delete_pending_download(pool: &SqlitePool, id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM pending_downloads WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}

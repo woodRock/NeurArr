@@ -304,9 +304,10 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
                     </div></div>
                     <div class="p-3">
                         <div class="font-bold text-sm truncate">${item.title}</div>
+                        ${item.status === 'downloading' ? '<div class="text-[9px] font-black bg-sky-500/20 text-sky-400 px-1.5 py-0.5 rounded inline-block mt-1 uppercase animate-pulse">Downloading</div>' : ''}
                         ${item.media_type === 'movie' ? 
-                            `<button onclick="openInteractiveSearch('${item.title.replace(/'/g, "\\'")}', null, ${item.id})" class="text-xs text-amber-400 mt-1 font-bold uppercase hover:underline">Manual Search</button>` :
-                            `<button onclick="openEpisodeModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-xs text-sky-400 mt-1 font-bold uppercase hover:underline">View Episodes</button>`
+                            `<button onclick="openInteractiveSearch('${item.title.replace(/'/g, "\\'")}', null, ${item.id})" class="text-xs text-amber-400 mt-1 font-bold uppercase hover:underline block">Manual Search</button>` :
+                            `<button onclick="openEpisodeModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-xs text-sky-400 mt-1 font-bold uppercase hover:underline block">View Episodes</button>`
                         }
                     </div>
                 </div>
@@ -367,7 +368,7 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
                 <div class="text-[11px] p-3 bg-slate-900 rounded-xl flex justify-between items-center border border-slate-800/50">
                     <span><b class="text-sky-400 mr-2">S${ep.season}E${ep.episode}</b> ${ep.title || 'Episode ' + ep.episode}</span>
                     <div class="flex items-center gap-3">
-                        <span class="text-[9px] font-black uppercase text-slate-500">${ep.status}</span>
+                        <span class="text-[9px] font-black uppercase ${ep.status === 'downloading' ? 'text-sky-400 animate-pulse' : 'text-slate-500'}">${ep.status}</span>
                         <button onclick="openInteractiveSearch('${showTitle.replace(/'/g, "\\'")}', ${ep.id}, null, 'S${ep.season.toString().padStart(2,'0')}E${ep.episode.toString().padStart(2,'0')}')" class="text-amber-400 hover:text-amber-300 font-bold uppercase text-[9px]">Search</button>
                     </div>
                 </div>
@@ -663,9 +664,20 @@ async fn download_torrent(State(state): State<AppState>, Json(req): Json<Downloa
     if qbit.add_torrent_url(&req.link, Some(&ing.to_string_lossy())).await.is_ok() {
         if let Some(eid) = req.episode_id {
             let _ = db::update_episode_status(&state.pool, eid, "downloading").await;
-        }
-        if let Some(sid) = req.show_id {
+            // Get metadata to store in pending_downloads
+            if let Ok(rows) = sqlx::query("SELECT s.tmdb_id, s.media_type, s.id as sid FROM episodes e JOIN tracked_shows s ON e.show_id = s.id WHERE e.id = ?").bind(eid).fetch_all(&state.pool).await {
+                if let Some(r) = rows.first() {
+                    use sqlx::Row;
+                    let _ = db::insert_pending_download(&state.pool, &req.title, Some(r.get::<i64, _>("sid")), Some(eid), r.get::<i64, _>("tmdb_id") as u32, &r.get::<String, _>("media_type")).await;
+                }
+            }
+        } else if let Some(sid) = req.show_id {
             let _ = db::update_tracked_show_status(&state.pool, sid, "downloading").await;
+            if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
+                if let Some(s) = tracked.iter().find(|t| t.id == sid) {
+                    let _ = db::insert_pending_download(&state.pool, &req.title, Some(sid), None, s.tmdb_id as u32, &s.media_type).await;
+                }
+            }
         }
         return Json(true);
     }
