@@ -314,7 +314,7 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                     let re = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap();
                                     for caps in re.find_iter(&r.title) {
                                         if caps.as_str() != year_str {
-                                            if t.contains(&format!("({})", caps.as_str())) || t.contains(&format!("[{}]", caps.as_str())) || t.endsWith(caps.as_str()) {
+                                            if t.contains(&format!("({})", caps.as_str())) || t.contains(&format!("[{}]", caps.as_str())) || t.ends_with(caps.as_str()) {
                                                 info!("Filtered season pack '{}' due to year mismatch", r.title);
                                                 return false;
                                             }
