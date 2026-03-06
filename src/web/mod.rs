@@ -303,10 +303,11 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         let currentSearchShowId = null;
         const placeholder = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjMwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMWUyOTNiIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZpbGw9IiM0NzU1NjkiIGZvbnQtc2l6ZT0iMTQiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIiBkeT0iLjNlbSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+Tk8gUE9TVEVSPC90ZXh0Pjwvc3ZnPg==';
 
-        function openInteractiveSearch(title, episodeId, showId, epCode = '') {
+        function openInteractiveSearch(title, episodeId, showId, epCode = '', year = '') {
             currentSearchEpisodeId = episodeId;
             currentSearchShowId = showId;
-            const query = epCode ? `${title} ${epCode}` : title;
+            let query = epCode ? `${title} ${epCode}` : title;
+            if (year) query += ` ${year}`;
             document.getElementById('interactive-modal-title').innerText = 'Search: ' + query;
             document.getElementById('interactive-search-input').value = query;
             document.getElementById('interactive-modal').classList.add('active');
@@ -405,7 +406,7 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
                         ${item.status === 'watched' ? '<div class="text-[9px] font-black bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded inline-block mt-1 uppercase">Watched</div>' : ''}
                         <button onclick="openItemDetails(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-xs text-sky-400 mt-1 font-bold uppercase hover:underline block">Details</button>
                         ${item.media_type === 'movie' ? 
-                            `<button onclick="openInteractiveSearch('${item.title.replace(/'/g, "\\'")}', null, ${item.id})" class="text-xs text-amber-400 mt-1 font-bold uppercase hover:underline block">Manual Search</button>` :
+                            `<button onclick="openInteractiveSearch('${item.title.replace(/'/g, "\\'")}', null, ${item.id}, '', '${item.year || ''}')" class="text-xs text-amber-400 mt-1 font-bold uppercase hover:underline block">Manual Search</button>` :
                             `<button onclick="openEpisodeModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-xs text-sky-400 mt-1 font-bold uppercase hover:underline block">View Episodes</button>`
                         }
                     </div>

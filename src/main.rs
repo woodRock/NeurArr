@@ -466,9 +466,12 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
 
             if let Ok(wanted_movies) = db::get_wanted_movies(&scheduler_pool).await {
                 for movie in wanted_movies {
-                    let mut queries = vec![movie.title.clone()];
+                    let mut queries = Vec::new();
+                    let year_suffix = movie.year.map(|y| format!(" {}", y)).unwrap_or_default();
+                    queries.push(format!("{}{}", movie.title, year_suffix));
+                    
                     if let Ok(alts) = scheduler_tmdb.get_alternative_titles(movie.tmdb_id as u32, false).await {
-                        for alt in alts { queries.push(alt); }
+                        for alt in alts { queries.push(format!("{}{}", alt, year_suffix)); }
                     }
                     let mut found = false;
                     let mut seen_torrents = std::collections::HashSet::new();
