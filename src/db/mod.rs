@@ -134,6 +134,7 @@ pub async fn insert_tracked_show(
     title: &str,
     tmdb_id: u32,
     media_type: &str,
+    status: &str,
     poster_path: Option<String>,
     release_date: Option<String>,
     genres: Option<String>,
@@ -146,12 +147,12 @@ pub async fn insert_tracked_show(
     sqlx::query(
         "INSERT INTO tracked_shows (title, tmdb_id, media_type, status, poster_path, release_date, year, genres, total_seasons)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(tmdb_id) DO UPDATE SET status = 'wanted', total_seasons = EXCLUDED.total_seasons"
+         ON CONFLICT(tmdb_id) DO UPDATE SET status = EXCLUDED.status, total_seasons = EXCLUDED.total_seasons"
     )
     .bind(title)
     .bind(tmdb_id)
     .bind(media_type)
-    .bind("wanted")
+    .bind(status)
     .bind(poster_path)
     .bind(release_date)
     .bind(year)
