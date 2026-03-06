@@ -4,7 +4,7 @@ use axum::{
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post, delete},
     middleware::{self, Next},
-    http::{Request, StatusCode},
+    http::Request,
     Json, Router,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
@@ -102,18 +102,18 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         .route("/login", get(login_page).post(handle_login))
         .with_state(state);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     info!("Dashboard available at http://{}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-async fn auth_middleware(jar: CookieJar, req: Request<axum::body::Body>, next: Next) -> Result<Response, StatusCode> {
+async fn auth_middleware(jar: CookieJar, req: Request<axum::body::Body>, next: Next) -> Result<Response, Response> {
     if jar.get("auth").is_none() {
         let path = req.uri().path();
         if path == "/login" { return Ok(next.run(req).await); }
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(Redirect::to("/login").into_response());
     }
     Ok(next.run(req).await)
 }
