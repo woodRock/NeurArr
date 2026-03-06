@@ -35,6 +35,7 @@ struct AppState {
     ollama: Arc<crate::llm::OllamaClient>,
     sys: Arc<StdMutex<System>>,
     log_tx: tokio::sync::broadcast::Sender<String>,
+    is_scanning: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::Sender<String>) -> Result<()> {
@@ -47,7 +48,8 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         tmdb, 
         ollama,
         sys: Arc::new(StdMutex::new(sys)),
-        log_tx
+        log_tx,
+        is_scanning: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     let app = Router::new()
@@ -57,6 +59,7 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         .route("/api/media/clear", delete(clear_queue))
         .route("/api/media/{id}/match", post(match_media))
         .route("/api/search", get(search_media))
+        .route("/api/search/genre", get(search_by_genre))
         .route("/api/upcoming", get(get_upcoming))
         .route("/api/calendar", get(get_calendar))
         .route("/api/track", post(track_show))
@@ -74,6 +77,8 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         .route("/api/interactive-search", post(interactive_search))
         .route("/api/download-torrent", post(download_torrent))
         .route("/api/torrents", get(get_torrents))
+        .route("/api/activity", get(get_activity))
+        .route("/api/scan-status", get(get_scan_status))
         .route("/api/sysinfo", get(get_sysinfo))
         .route("/api/disks", get(get_disks))
         .route("/api/logs", get(stream_logs))
@@ -134,42 +139,69 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
     </style>
 </head>
 <body class="p-4">
-    <nav class="glass sticky top-0 flex gap-4 p-4 mb-4 rounded-xl items-center">
-        <div class="font-bold text-xl mr-4 text-sky-400">NeurArr</div>
-        <button onclick="showTab('queue')" id="nav-queue" class="active">QUEUE</button>
-        <button onclick="showTab('tracked')" id="nav-tracked">COLLECTION</button>
-        <button onclick="showTab('calendar')" id="nav-calendar">CALENDAR</button>
-        <button onclick="showTab('upcoming')" id="nav-upcoming">DISCOVER</button>
-        <button onclick="showTab('recommendations')" id="nav-recommendations">FOR YOU</button>
-        <button onclick="showTab('downloads')" id="nav-downloads">DOWNLOADS</button>
-        <button onclick="showTab('settings')" id="nav-settings">SETTINGS</button>
-        <button onclick="showTab('logs')" id="nav-logs">LOGS</button>
-        <div class="ml-auto text-[10px] text-slate-400 flex gap-4 items-center font-bold">
-            <span id="sys-cpu">CPU: 0%</span><span id="sys-ram">RAM: 0MB</span>
-            <button onclick="updateApp()" class="text-amber-400 px-2 py-1 border border-amber-400/30 rounded">UPDATE</button>
+    <nav class="glass sticky top-0 flex gap-6 p-4 mb-8 rounded-2xl items-center z-50">
+        <div class="font-black text-2xl mr-6 text-white tracking-tighter flex items-center gap-2">
+            <span class="text-sky-500">Neur</span>Arr
+            <div id="scan-indicator" class="hidden"><div class="w-2 h-2 bg-sky-500 rounded-full animate-ping"></div></div>
+        </div>
+        <button onclick="showTab('recommendations')" id="nav-recommendations" class="active font-bold text-xs tracking-widest uppercase opacity-50 hover:opacity-100 transition-opacity">For You</button>
+        <button onclick="showTab('upcoming')" id="nav-upcoming" class="font-bold text-xs tracking-widest uppercase opacity-50 hover:opacity-100 transition-opacity">Discover</button>
+        <button onclick="showTab('tracked')" id="nav-tracked" class="font-bold text-xs tracking-widest uppercase opacity-50 hover:opacity-100 transition-opacity">Collection</button>
+        <button onclick="showTab('activity')" id="nav-activity" class="font-bold text-xs tracking-widest uppercase opacity-50 hover:opacity-100 transition-opacity">Activity</button>
+        
+        <div class="ml-auto flex items-center gap-6">
+            <div class="hidden md:flex gap-4 text-[10px] text-slate-500 font-mono">
+                <span id="sys-cpu">CPU: 0%</span>
+                <span id="sys-ram">RAM: 0MB</span>
+            </div>
+            <button onclick="toggleSettingsMenu()" class="text-slate-400 hover:text-white transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+            </button>
         </div>
     </nav>
 
+    <div id="settings-menu" class="hidden fixed right-4 top-20 w-64 glass rounded-2xl p-4 z-50 shadow-2xl border border-white/5">
+        <div class="flex flex-col gap-2">
+            <button onclick="showTab('calendar')" class="text-left px-4 py-2 hover:bg-white/5 rounded-lg text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white">Calendar</button>
+            <button onclick="showTab('settings')" class="text-left px-4 py-2 hover:bg-white/5 rounded-lg text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white">System Settings</button>
+            <button onclick="showTab('logs')" class="text-left px-4 py-2 hover:bg-white/5 rounded-lg text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white">Live Logs</button>
+            <hr class="border-white/5 my-2">
+            <button onclick="updateApp()" class="text-left px-4 py-2 hover:bg-white/5 rounded-lg text-xs font-bold uppercase tracking-wider text-amber-500">Update App</button>
+        </div>
+    </div>
+
     <div class="max-w-7xl mx-auto">
-        <div class="flex gap-4 mb-8">
-            <input type="text" id="search-query" placeholder="Search movies or shows..." class="flex-grow glass rounded-xl px-6 py-3 outline-none focus:ring-2 focus:ring-sky-500/50">
-            <button onclick="performGlobalSearch()" class="bg-sky-600 px-8 py-3 rounded-xl font-semibold hover:bg-sky-500 transition-colors">Search</button>
+        <div class="flex gap-4 mb-12">
+            <input type="text" id="search-query" placeholder="Search for something new..." class="flex-grow bg-white/5 border border-white/10 rounded-2xl px-8 py-4 outline-none focus:ring-2 focus:ring-sky-500/50 text-lg font-medium placeholder:text-slate-600 transition-all">
+            <button onclick="performGlobalSearch()" class="bg-sky-600 px-10 py-4 rounded-2xl font-bold hover:bg-sky-500 transition-all shadow-lg shadow-sky-900/20 active:scale-95">SEARCH</button>
         </div>
 
-        <div id="tab-queue" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
-        <div id="tab-tracked" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4"></div>
+        <div id="tab-recommendations" class="space-y-8">
+            <div class="flex justify-between items-end">
+                <h2 class="text-2xl font-black text-white uppercase tracking-tighter">For You</h2>
+                <div id="preference-chips" class="flex gap-2"></div>
+            </div>
+            <div id="recommendation-results" class="grid grid-cols-2 md:grid-cols-5 gap-6"></div>
+        </div>
+
+        <div id="tab-upcoming" class="hidden space-y-8">
+            <h2 class="text-2xl font-black text-white uppercase tracking-tighter">Discover</h2>
+            <div id="upcoming-results" class="grid grid-cols-2 md:grid-cols-5 gap-6"></div>
+        </div>
+
+        <div id="tab-tracked" class="hidden grid grid-cols-2 md:grid-cols-5 gap-6"></div>
+        
+        <div id="tab-activity" class="hidden space-y-4">
+            <h2 class="text-2xl font-black text-white uppercase tracking-tighter mb-6">Current Activity</h2>
+            <div id="activity-list" class="space-y-3"></div>
+        </div>
+
         <div id="tab-calendar" class="hidden space-y-4"></div>
-        <div id="tab-upcoming" class="hidden space-y-6">
-            <div id="preference-chips" class="flex flex-wrap gap-2 mb-4"></div>
-            <div id="upcoming-results" class="grid grid-cols-2 md:grid-cols-5 gap-4"></div>
-        </div>
-        <div id="tab-recommendations" class="hidden space-y-6">
-            <h2 class="text-xl font-bold text-sky-400">Recommended for You</h2>
-            <div id="recommendation-results" class="grid grid-cols-2 md:grid-cols-5 gap-4"></div>
-        </div>
-        <div id="tab-downloads" class="hidden space-y-2"></div>
-        <div id="tab-search" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4"></div>
-        <div id="tab-logs" class="hidden glass p-4 rounded-xl font-mono text-[10px] h-[70vh] overflow-y-auto space-y-1" id="log-container"></div>
+        <div id="tab-search" class="hidden grid grid-cols-2 md:grid-cols-5 gap-6"></div>
+        <div id="tab-logs" class="hidden glass p-6 rounded-2xl font-mono text-[11px] h-[70vh] overflow-y-auto space-y-1 border border-white/5" id="log-container"></div>
         
         <div id="tab-settings" class="hidden glass p-8 rounded-xl">
             <h2 class="font-bold mb-4 text-xl">System Status</h2>
@@ -455,12 +487,81 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
             `).join('') : '<div class="col-span-5 text-center text-slate-500 py-20 uppercase font-bold text-xs tracking-widest">Rate some shows to get personalized recommendations!</div>';
         }
 
+        function toggleSettingsMenu() { document.getElementById('settings-menu').classList.toggle('hidden'); }
+
+        function showTab(tab) {
+            ['tracked', 'upcoming', 'settings', 'search', 'calendar', 'recommendations', 'activity', 'logs'].forEach(t => {
+                const el = document.getElementById('tab-' + t);
+                if (el) el.classList.toggle('hidden', t !== tab);
+                const nav = document.getElementById('nav-' + t);
+                if (nav) {
+                    nav.classList.toggle('active', t === tab);
+                    nav.style.opacity = t === tab ? '1' : '0.5';
+                }
+            });
+            document.getElementById('settings-menu').classList.add('hidden');
+            if(tab === 'tracked') fetchTracked(); 
+            if(tab === 'upcoming') { fetchUpcoming(); fetchChips(); }
+            if(tab === 'recommendations') { fetchRecommendations(); fetchChips(); }
+            if(tab === 'activity') fetchActivity();
+            if(tab === 'settings') fetchDisks(); 
+            if(tab === 'calendar') fetchCalendar();
+        }
+
+        async function fetchActivity() {
+            const res = await fetch('/api/activity'); const data = await res.json();
+            document.getElementById('activity-list').innerHTML = data.length ? data.map(item => `
+                <div class="glass p-4 rounded-2xl flex items-center gap-6 border border-white/5 group hover:border-sky-500/30 transition-all">
+                    <div class="w-1.5 h-12 rounded-full ${item.status === 'Downloading' ? 'bg-sky-500 animate-pulse' : 'bg-slate-700'}"></div>
+                    <div class="flex-grow">
+                        <div class="flex justify-between items-end mb-2">
+                            <span class="font-bold text-sm text-slate-200">${item.title}</span>
+                            <div class="flex items-center gap-3">
+                                <span class="text-[8px] font-black uppercase bg-slate-800 text-slate-500 px-1.5 py-0.5 rounded tracking-tighter">${item.source}</span>
+                                <span class="text-[10px] font-black uppercase text-sky-500 tracking-widest">${item.status}</span>
+                            </div>
+                        </div>
+                        <div class="w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                            <div class="h-full bg-sky-500 transition-all duration-1000" style="width: ${item.progress * 100}%"></div>
+                        </div>
+                    </div>
+                    <div class="text-[10px] font-mono text-slate-500 w-12 text-right">${(item.progress * 100).toFixed(0)}%</div>
+                </div>
+            `).join('') : '<div class="text-center py-20 text-slate-500 font-bold uppercase tracking-widest text-xs">No active tasks.</div>';
+        }
+
+        async function checkScanStatus() {
+            const res = await fetch('/api/scan-status'); const isScanning = await res.json();
+            document.getElementById('scan-indicator').classList.toggle('hidden', !isScanning);
+        }
+
         async function fetchChips() {
             const res = await fetch('/api/preferences/chips'); const data = await res.json();
             document.getElementById('preference-chips').innerHTML = data.map(chip => `
-                <button onclick="document.getElementById('search-query').value='${chip}'; performGlobalSearch();" class="px-3 py-1 rounded-full bg-sky-500/10 border border-sky-500/30 text-sky-400 text-[10px] font-bold hover:bg-sky-500 hover:text-white transition-all">
-                    ${chip.toUpperCase()}
+                <button onclick="performGenreSearch('${chip}')" class="px-4 py-1.5 rounded-full bg-white/5 border border-white/10 text-slate-400 text-[10px] font-black hover:bg-sky-500 hover:text-white hover:border-sky-500 transition-all uppercase tracking-tighter">
+                    ${chip}
                 </button>
+            `).join('');
+        }
+
+        async function performGenreSearch(genre) {
+            showTab('search');
+            document.getElementById('tab-search').innerHTML = '<div class="col-span-5 text-center py-20 text-slate-500 uppercase font-black animate-pulse tracking-widest">Discovering ${genre} titles...</div>';
+            const res = await fetch('/api/search/genre?genre=' + encodeURIComponent(genre));
+            const data = await res.json();
+            renderSearchResults(data);
+        }
+
+        function renderSearchResults(data) {
+            document.getElementById('tab-search').innerHTML = data.map(item => `
+                <div class="glass rounded-2xl overflow-hidden p-4 border border-white/5 group hover:border-sky-500/50 transition-all">
+                    <div class="relative overflow-hidden rounded-xl">
+                        <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-48 w-full object-cover group-hover:scale-110 transition-transform duration-500" onerror="this.src='${placeholder}'">
+                    </div>
+                    <div class="mt-4 text-sm font-bold truncate text-slate-200">${item.title || item.name}</div>
+                    <div class="text-[10px] text-slate-500 mb-4">${item.release_date || item.first_air_date || 'Unknown'}</div>
+                    <button onclick="track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="w-full bg-sky-600/10 text-sky-400 py-3 rounded-xl font-black text-[10px] hover:bg-sky-600 hover:text-white transition-all uppercase tracking-widest">Track Item</button>
+                </div>
             `).join('');
         }
 
@@ -578,7 +679,7 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
             };
         }
 
-        showTab('queue'); setInterval(fetchSysInfo, 3000); initLogs();
+        showTab('recommendations'); setInterval(fetchSysInfo, 3000); setInterval(checkScanStatus, 5000); setInterval(fetchActivity, 5000); initLogs();
     </script>
 </body>
 </html>
@@ -766,8 +867,119 @@ async fn get_profiles(State(state): State<AppState>) -> Json<Vec<QualityProfile>
 
 async fn scan_library(State(state): State<AppState>) -> Json<bool> {
     let pool = state.pool.clone();
-    tokio::spawn(async move { let _ = crate::scan_library(pool).await; });
+    let is_scanning = state.is_scanning.clone();
+    tokio::spawn(async move { 
+        is_scanning.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = crate::scan_library(pool).await; 
+        is_scanning.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
     Json(true)
+}
+
+async fn get_scan_status(State(state): State<AppState>) -> Json<bool> {
+    Json(state.is_scanning.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+#[derive(Deserialize)]
+struct GenreSearchQuery { genre: String }
+
+async fn search_by_genre(State(state): State<AppState>, Query(params): Query<GenreSearchQuery>) -> Json<Vec<crate::integrations::tmdb::TmdbMedia>> {
+    // TMDB genre search
+    let genres_movie = state.tmdb.get_genres(false).await.unwrap_or_default();
+    let genres_tv = state.tmdb.get_genres(true).await.unwrap_or_default();
+    
+    let gid = genres_movie.iter().find(|g| g.name.to_lowercase() == params.genre.to_lowercase())
+        .or_else(|| genres_tv.iter().find(|g| g.name.to_lowercase() == params.genre.to_lowercase()))
+        .map(|g| g.id);
+
+    if let Some(id) = gid {
+        let mut results = Vec::new();
+        // Just getting movie discover for now as a representative search
+        let url = format!("https://api.themoviedb.org/3/discover/movie?api_key={}&with_genres={}", std::env::var("TMDB_API_KEY").unwrap_or_default(), id);
+        if let Ok(res) = state.tmdb.client.get(&url).send().await {
+            let json_res: Result<crate::integrations::tmdb::TmdbSearchResult, _> = res.json().await;
+            if let Ok(json) = json_res {
+                for mut m in json.results {
+                    m.media_type = Some("movie".to_string());
+                    results.push(m);
+                }
+            }
+        }
+        return Json(results);
+    }
+    Json(vec![])
+}
+
+#[derive(Serialize)]
+struct ActivityItem {
+    id: String,
+    title: String,
+    status: String,
+    progress: f32,
+    media_type: String,
+    source: String, // 'tracked' or 'ingest'
+}
+
+async fn get_activity(State(state): State<AppState>) -> Json<Vec<ActivityItem>> {
+    let mut activity = Vec::new();
+
+    // 1. Get Torrent Downloads
+    if let Ok(qbit) = crate::integrations::torrent::QBittorrentClient::new() {
+        if qbit.login().await.is_ok() {
+            if let Ok(torrents) = qbit.get_torrents().await {
+                for t in torrents {
+                    activity.push(ActivityItem {
+                        id: t.hash.clone(),
+                        title: t.name.clone(),
+                        status: "Downloading".to_string(),
+                        progress: t.progress,
+                        media_type: "unknown".to_string(),
+                        source: "tracked".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    // 2. Get Media Queue (Ingest folder items)
+    let items = sqlx::query_as::<_, MediaItem>("SELECT * FROM media_items WHERE status != 'completed'").fetch_all(&state.pool).await.unwrap_or_default();
+    for i in items {
+        // Skip if already in torrent list (to avoid double showing)
+        if activity.iter().any(|a| i.original_filename.contains(&a.title) || a.title.contains(&i.original_filename)) { continue; }
+        
+        activity.push(ActivityItem {
+            id: i.id.to_string(),
+            title: i.title.clone(),
+            status: match i.status.as_str() {
+                "parsed" => "Matched",
+                "summarized" => "Processing",
+                _ => "New File",
+            }.to_string(),
+            progress: 1.0,
+            media_type: if i.season.is_some() { "tv" } else { "movie" }.to_string(),
+            source: "ingest".to_string(),
+        });
+    }
+
+    // 3. Get Wanted Episodes/Movies (Tracked but not indexed yet)
+    // We only show these if they aren't already matched or downloading
+    if let Ok(wanted_eps) = db::get_wanted_episodes(&state.pool).await {
+        for (ep, show) in wanted_eps.iter().take(10) {
+            let title = format!("{} S{:02}E{:02}", show.title, ep.season, ep.episode);
+            if !activity.iter().any(|a| a.title.contains(&show.title) || title.contains(&a.title)) {
+                activity.push(ActivityItem {
+                    id: format!("ep_{}", ep.id),
+                    title,
+                    status: "Tracked".to_string(),
+                    progress: 0.0,
+                    media_type: "tv".to_string(),
+                    source: "tracked".to_string(),
+                });
+            }
+        }
+    }
+
+    Json(activity)
 }
 
 async fn trigger_update() -> Json<bool> {
@@ -901,7 +1113,8 @@ async fn get_trailers(State(state): State<AppState>, Path(id): Path<i64>) -> Jso
     if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
         if let Some(s) = tracked.iter().find(|t| t.id == id) {
             if let Ok(videos) = state.tmdb.get_videos(s.tmdb_id as u32, s.media_type == "tv").await {
-                return Json(videos.into_iter().filter(|v| v.r#type == "Trailer").collect());
+                let trailers: Vec<_> = videos.into_iter().filter(|v| v.r#type == "Trailer").collect();
+                return Json(trailers);
             }
         }
     }

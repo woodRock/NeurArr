@@ -35,8 +35,8 @@ pub struct TmdbMediaFull {
 
 #[derive(Clone)]
 pub struct TmdbClient {
-    client: Client,
-    api_key: String,
+    pub client: Client,
+    pub api_key: String,
 }
 
 impl TmdbClient {
@@ -164,30 +164,6 @@ impl TmdbClient {
     }
 
     pub async fn get_alternative_titles(&self, id: u32, is_tv: bool) -> Result<Vec<String>> {
-...
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct TmdbVideo {
-    pub key: String,
-    pub site: String,
-    pub r#type: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TmdbVideoResponse {
-    pub results: Vec<TmdbVideo>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct TmdbCredits {
-    pub cast: Vec<TmdbCast>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct TmdbCast {
-    pub name: String,
-    pub character: String,
-    pub profile_path: Option<String>,
-}
         let media_type = if is_tv { "tv" } else { "movie" };
         let url = format!(
             "https://api.themoviedb.org/3/{}/{}/alternative_titles?api_key={}",
@@ -210,6 +186,30 @@ pub struct TmdbCast {
         }
         Ok(titles)
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TmdbVideo {
+    pub key: String,
+    pub site: String,
+    pub r#type: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TmdbVideoResponse {
+    pub results: Vec<TmdbVideo>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TmdbCredits {
+    pub cast: Vec<TmdbCast>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TmdbCast {
+    pub name: String,
+    pub character: String,
+    pub profile_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

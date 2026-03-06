@@ -93,3 +93,39 @@ fn test_backoff_threshold_logic() {
     assert_eq!(results[2], true);
     assert_eq!(results[3], true);
 }
+
+#[test]
+fn test_quality_upgrade_logic() {
+    // Logic from is_better_resolution
+    let is_better = |target: &str, current: &str| {
+        let rank = |r: &str| match r.to_lowercase().as_str() {
+            "2160p" | "4k" => 4,
+            "1080p" => 3,
+            "720p" => 2,
+            "480p" | "sd" => 1,
+            _ => 0,
+        };
+        rank(target) > rank(current)
+    };
+
+    assert!(is_better("1080p", "720p"));
+    assert!(is_better("2160p", "1080p"));
+    assert!(!is_better("720p", "1080p"));
+    assert!(!is_better("1080p", "1080p"));
+}
+
+#[test]
+fn test_genre_search_mapping_logic() {
+    let genres = vec![
+        (28, "Action"),
+        (12, "Adventure"),
+        (35, "Comedy"),
+    ];
+    
+    let search_term = "comedy";
+    let found_id = genres.iter()
+        .find(|(_, name)| name.to_lowercase() == search_term.to_lowercase())
+        .map(|(id, _)| *id);
+        
+    assert_eq!(found_id, Some(35));
+}
