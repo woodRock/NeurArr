@@ -409,9 +409,9 @@ async fn dashboard() -> impl IntoResponse {
         async function fetchRecommendations() {
             const res = await fetch('/api/recommendations'); const data = await res.json();
             document.getElementById('recommendation-results').innerHTML = data.length ? data.map(item => `
-                <div class="glass rounded-3xl overflow-hidden p-5 text-center cursor-pointer group hover:border-purple-500/50 transition-all duration-500 relative" onclick="openItemDetailsExternal('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.media_type}')">
-                    <div class="absolute top-7 right-7 flex flex-col gap-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                        <button onclick="event.stopPropagation(); vote(${item.id}, '${item.media_type}', 1)" class="p-2 bg-emerald-600/80 hover:bg-emerald-500 rounded-full text-white shadow-lg backdrop-blur-md transition-all scale-90 hover:scale-110">
+                <div id="rec-${item.id}" class="glass rounded-3xl overflow-hidden p-5 text-center cursor-pointer group hover:border-purple-500/50 transition-all duration-500 relative ${item.vote === 1 ? 'border-emerald-500/50 shadow-[0_0_20px_rgba(16,185,129,0.1)]' : ''}" onclick="openItemDetailsExternal('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.media_type}')">
+                    <div class="absolute top-7 right-7 flex flex-col gap-2 z-10 ${item.vote === 1 ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity duration-300">
+                        <button id="vote-up-${item.id}" onclick="event.stopPropagation(); vote(${item.id}, '${item.media_type}', 1)" class="p-2 ${item.vote === 1 ? 'bg-emerald-500' : 'bg-emerald-600/80 hover:bg-emerald-500'} rounded-full text-white shadow-lg backdrop-blur-md transition-all scale-90 hover:scale-110">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M2 10.5a1.5 1.5 0 113 0v6a1.5 1.5 0 01-3 0v-6zM6 10.333v5.43a2 2 0 001.106 1.79l.05.025A4 4 0 008.943 18h5.416a2 2 0 001.962-1.608l1.2-6A2 2 0 0015.56 8H12V4a2 2 0 00-2-2 1 1 0 00-1 1v.667a4 4 0 01-.8 2.4L6.8 10.2a1 1 0 00-.8.133z" /></svg>
                         </button>
                         <button onclick="event.stopPropagation(); vote(${item.id}, '${item.media_type}', -1)" class="p-2 bg-rose-600/80 hover:bg-rose-500 rounded-full text-white shadow-lg backdrop-blur-md transition-all scale-90 hover:scale-110">
@@ -426,13 +426,27 @@ async fn dashboard() -> impl IntoResponse {
                     </div>
                 </div>`).join('') : '<div class="col-span-5 text-center text-slate-600 py-32 font-black uppercase tracking-[0.3em] text-xs">Rate shows to trigger recommendations</div>';
         }
-        async function vote(tmdbId, mediaType, vote) {
+        async function vote(tmdbId, mediaType, voteVal) {
+            const card = document.getElementById(`rec-${tmdbId}`);
+            if (voteVal === -1) {
+                if (card) {
+                    card.style.transform = 'scale(0.8)';
+                    card.style.opacity = '0';
+                    setTimeout(() => { if (card) card.remove(); }, 300);
+                }
+            } else if (voteVal === 1) {
+                if (card) {
+                    card.classList.add('border-emerald-500/50', 'shadow-[0_0_20px_rgba(16,185,129,0.1)]');
+                    const btn = document.getElementById(`vote-up-${tmdbId}`);
+                    if (btn) btn.classList.replace('bg-emerald-600/80', 'bg-emerald-500');
+                }
+            }
+
             await fetch('/api/recommendations/vote', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tmdb_id: tmdbId, media_type: mediaType, vote })
+                body: JSON.stringify({ tmdb_id: tmdbId, media_type: mediaType, vote: voteVal })
             });
-            fetchRecommendations();
         }
 
         async function fetchNextUp() {
@@ -508,7 +522,7 @@ async fn dashboard() -> impl IntoResponse {
             });
             if (res.ok) {
                 alert('Tracked: ' + title);
-                if(status==='wanted') showTab('activity'); else fetchTracked();
+                if(status !== 'wanted') fetchTracked();
             } else {
                 alert('Neural uplink failed: ' + res.status);
             }
@@ -1013,13 +1027,30 @@ struct RateRequest { rating: i64 }
 
 async fn rate_item(State(state): State<AppState>, Path(id): Path<i64>, Json(req): Json<RateRequest>) -> Json<bool> { let _ = db::update_tracked_show_info(&state.pool, id, None, None, Some(req.rating)).await; Json(true) }
 
-async fn get_recommendations(State(state): State<AppState>) -> Json<Vec<crate::integrations::tmdb::TmdbMedia>> {
+#[derive(Serialize)]
+struct RecommendationMedia {
+    #[serde(flatten)]
+    media: crate::integrations::tmdb::TmdbMedia,
+    vote: Option<i32>,
+}
+
+async fn get_recommendations(State(state): State<AppState>) -> Json<Vec<RecommendationMedia>> {
     use rand::seq::SliceRandom;
     
     let tracked_shows = db::get_tracked_shows(&state.pool).await.unwrap_or_default();
     let tracked_ids: std::collections::HashSet<_> = tracked_shows.iter().map(|s| s.tmdb_id as i64).collect();
     let disapproved = db::get_disapproved_ids(&state.pool).await.unwrap_or_default();
-    let approved = db::get_approved_ids(&state.pool).await.unwrap_or_default();
+    
+    let votes = sqlx::query("SELECT tmdb_id, vote FROM recommendation_feedback")
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default();
+    use sqlx::Row;
+    let vote_map: std::collections::HashMap<i64, i32> = votes.into_iter().map(|r| (r.get::<i64, _>(0), r.get::<i32, _>(1))).collect();
+    let approved_ids: Vec<(i64, String)> = vote_map.iter()
+        .filter(|(_, v)| **v == 1)
+        .map(|(id, _)| (*id, "movie".to_string()))
+        .collect();
 
     let mut seeds = Vec::new();
     {
@@ -1031,7 +1062,7 @@ async fn get_recommendations(State(state): State<AppState>) -> Json<Vec<crate::i
             seeds.push((item.tmdb_id as i64, item.media_type.clone()));
         }
         
-        let mut approved_shuffled = approved.clone();
+        let mut approved_shuffled = approved_ids.clone();
         approved_shuffled.shuffle(&mut rng);
         for app in approved_shuffled {
             if !seeds.iter().any(|s| s.0 == app.0) { seeds.push(app); }
@@ -1039,21 +1070,21 @@ async fn get_recommendations(State(state): State<AppState>) -> Json<Vec<crate::i
         seeds.shuffle(&mut rng);
     }
 
-    let mut recs = Vec::new();
+    let mut raw_recs = Vec::new();
     for (tmdb_id, media_type) in seeds.iter().take(10) {
         if media_type == "movie" { 
             if let Ok(results) = state.tmdb.get_movie_recommendations(*tmdb_id as u32).await { 
-                for mut m in results { m.media_type = Some("movie".to_string()); recs.push(m); } 
+                for mut m in results { m.media_type = Some("movie".to_string()); raw_recs.push(m); } 
             } 
         } else { 
             if let Ok(results) = state.tmdb.get_tv_recommendations(*tmdb_id as u32).await { 
-                for mut m in results { m.media_type = Some("tv".to_string()); recs.push(m); } 
+                for mut m in results { m.media_type = Some("tv".to_string()); raw_recs.push(m); } 
             } 
         }
     }
     
     let mut seen = std::collections::HashSet::new(); 
-    recs.retain(|m| {
+    raw_recs.retain(|m| {
         seen.insert(m.id) && 
         !tracked_ids.contains(&(m.id as i64)) && 
         !disapproved.contains(&(m.id as i64))
@@ -1061,10 +1092,15 @@ async fn get_recommendations(State(state): State<AppState>) -> Json<Vec<crate::i
 
     {
         let mut rng = rand::thread_rng();
-        recs.shuffle(&mut rng);
+        raw_recs.shuffle(&mut rng);
     }
     
-    Json(recs.into_iter().take(20).collect())
+    let final_recs = raw_recs.into_iter().take(20).map(|m| {
+        let v = vote_map.get(&(m.id as i64)).copied();
+        RecommendationMedia { media: m, vote: v }
+    }).collect();
+
+    Json(final_recs)
 }
 
 #[derive(Deserialize)]
