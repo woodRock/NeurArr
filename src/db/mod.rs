@@ -164,7 +164,7 @@ pub async fn insert_tracked_show(
 }
 
 pub async fn get_tracked_shows(pool: &SqlitePool) -> Result<Vec<TrackedShow>> {
-    let items = sqlx::query_as::<_, TrackedShow>("SELECT * FROM tracked_shows ORDER BY release_date ASC")
+    let items = sqlx::query_as::<_, TrackedShow>("SELECT * FROM tracked_shows ORDER BY title ASC")
         .fetch_all(pool)
         .await?;
     Ok(items)
