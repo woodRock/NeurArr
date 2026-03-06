@@ -177,6 +177,39 @@ pub struct TrackedShow {
     pub release_date: Option<String>,
     pub added_at: String,
     pub year: Option<i64>,
+    pub search_attempts: i64,
+    pub last_searched_at: Option<String>,
+}
+
+pub async fn get_wanted_movies(pool: &SqlitePool) -> Result<Vec<TrackedShow>> {
+    let items = sqlx::query_as::<_, TrackedShow>(
+        "SELECT * FROM tracked_shows 
+         WHERE media_type = 'movie' AND status = 'wanted'
+         AND (
+            search_attempts < 3 
+            OR last_searched_at IS NULL 
+            OR last_searched_at < datetime('now', '-30 minutes')
+         )"
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(items)
+}
+
+pub async fn increment_movie_attempts(pool: &SqlitePool, id: i64) -> Result<()> {
+    sqlx::query("UPDATE tracked_shows SET search_attempts = search_attempts + 1, last_searched_at = datetime('now') WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn reset_movie_attempts(pool: &SqlitePool, id: i64) -> Result<()> {
+    sqlx::query("UPDATE tracked_shows SET search_attempts = 0 WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 pub async fn delete_tracked_show(pool: &SqlitePool, id: i64) -> Result<()> {
@@ -278,6 +311,8 @@ pub async fn get_wanted_episodes(pool: &SqlitePool) -> Result<Vec<(Episode, Trac
             release_date: None,
             added_at: "".to_string(),
             year: r.get("show_year"),
+            search_attempts: 0,
+            last_searched_at: None,
         };
         results.push((ep, show));
     }

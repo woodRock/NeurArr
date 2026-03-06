@@ -414,6 +414,84 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 }
             }
+
+            if let Ok(wanted_movies) = db::get_wanted_movies(&scheduler_pool).await {
+                for movie in wanted_movies {
+                    let mut queries = vec![movie.title.clone()];
+                    if let Ok(alts) = scheduler_tmdb.get_alternative_titles(movie.tmdb_id as u32, false).await {
+                        for alt in alts { queries.push(alt); }
+                    }
+                    let mut found = false;
+                    let mut seen_torrents = std::collections::HashSet::new();
+                    for q in queries {
+                        if found { break; }
+                        match indexer.search(&q).await {
+                            Ok(res) => {
+                                info!("Found {} results for movie query: {}", res.len(), q);
+                                let filtered: Vec<_> = res.into_iter().filter(|r| {
+                                    if let Some(p) = &profile {
+                                        let t = r.title.to_lowercase();
+                                        if let Some(must) = &p.must_contain { if !must.is_empty() && !t.contains(must) { return false; } }
+                                        if let Some(not) = &p.must_not_contain { 
+                                            for w in not.split(',') { 
+                                                let tag = w.trim().to_lowercase();
+                                                if tag.is_empty() { continue; }
+                                                let title_parts: Vec<_> = t.split(|c: char| !c.is_alphanumeric()).filter(|s| !s.is_empty()).collect();
+                                                if title_parts.contains(&tag.as_str()) { return false; }
+                                            } 
+                                        }
+                                        if p.max_resolution == "1080p" && t.contains("2160p") { return false; }
+                                    }
+                                    true
+                                }).collect();
+                                for best in filtered {
+                                    if seen_torrents.contains(&best.link) { continue; }
+                                    seen_torrents.insert(best.link.clone());
+
+                                    let normalize = |s: &str| s.to_lowercase().chars().filter(|c| c.is_alphanumeric() || c.is_whitespace()).collect::<String>();
+                                    let target_norm = normalize(&movie.title);
+                                    let torrent_norm = normalize(&best.title);
+                                    let is_string_match = torrent_norm.contains(&target_norm);
+                                    
+                                    let verified = if is_string_match {
+                                        info!("String match confirmed for movie: {}", best.title);
+                                        true
+                                    } else {
+                                        let target_words: std::collections::HashSet<_> = target_norm.split_whitespace().filter(|w| w.len() > 2).collect();
+                                        let torrent_words: std::collections::HashSet<_> = torrent_norm.split_whitespace().collect();
+                                        let has_overlap = target_words.iter().any(|w| torrent_words.contains(w));
+
+                                        if !has_overlap {
+                                            false
+                                        } else {
+                                            match scheduler_ollama.verify_torrent_match(&movie.title, &best.title).await {
+                                                Ok(v) => v,
+                                                Err(_) => false
+                                            }
+                                        }
+                                    };
+
+                                    if verified {
+                                        info!("Verified movie match: {}", best.title);
+                                        let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
+                                        if scheduler_qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
+                                            send_notification("NeurArr", &format!("Downloading Movie: {}", best.title));
+                                            let _ = db::update_tracked_show_status(&scheduler_pool, movie.id, "downloading").await;
+                                            let _ = db::reset_movie_attempts(&scheduler_pool, movie.id).await;
+                                            found = true; break;
+                                        }
+                                    }
+                                }
+                            },
+                            Err(e) => error!("Indexer search error for movie query {}: {}", q, e),
+                        }
+                    }
+                    if !found {
+                        let _ = db::increment_movie_attempts(&scheduler_pool, movie.id).await;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+            }
             tokio::time::sleep(std::time::Duration::from_secs(300)).await;
         }
     });
