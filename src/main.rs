@@ -80,11 +80,41 @@ async fn main() -> Result<()> {
 pub async fn scan_library(pool: sqlx::SqlitePool) -> Result<()> {
     let library_dir = env::var("NEURARR_LIBRARY_DIR").unwrap_or_else(|_| "./library".to_string());
     info!("Starting full library scan in: {}", library_dir);
+    
+    let tmdb = TmdbClient::new()?;
+    let tracked = db::get_tracked_shows(&pool).await?;
+
     for entry in WalkDir::new(&library_dir).into_iter().filter_map(|e| e.ok()) {
         if entry.file_type().is_file() {
             let filename = entry.file_name().to_string_lossy().to_string();
-            if filename.ends_with(".mkv") || filename.ends_with(".mp4") || filename.ends_with(".avi") {
+            let ext = entry.path().extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ["mkv", "mp4", "avi", "mov"].contains(&ext) {
                 let metadata = Parser::parse_regex(&filename);
+                
+                // Smart Linking: check if this file belongs to a tracked show
+                for show in &tracked {
+                    let mut is_match = show.title.to_lowercase() == metadata.title.to_lowercase();
+                    
+                    if !is_match {
+                        if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, show.media_type == "tv").await {
+                            if alts.iter().any(|a| a.to_lowercase() == metadata.title.to_lowercase()) {
+                                is_match = true;
+                            }
+                        }
+                    }
+
+                    if is_match {
+                        info!("Scanner: Matched {} to tracked show: {}", filename, show.title);
+                        if let (Some(s), Some(e)) = (metadata.season, metadata.episode) {
+                            // Update episode status to completed
+                            let _ = sqlx::query("UPDATE episodes SET status = 'completed' WHERE show_id = ? AND season = ? AND episode = ?")
+                                .bind(show.id).bind(s as i64).bind(e as i64).execute(&pool).await;
+                        } else if show.media_type == "movie" {
+                            let _ = db::update_tracked_show_status(&pool, show.id, "completed").await;
+                        }
+                    }
+                }
+
                 let _ = db::insert_media_item(&pool, &filename, &metadata).await;
             }
         }

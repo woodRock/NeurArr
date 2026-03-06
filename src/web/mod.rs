@@ -384,8 +384,22 @@ async fn get_calendar(State(state): State<AppState>) -> Json<Vec<CalendarEpisode
 struct TrackRequest { id: u32, title: String, poster_path: Option<String>, release_date: Option<String>, media_type: String }
 
 async fn track_show(State(state): State<AppState>, Json(req): Json<TrackRequest>) -> Json<bool> {
-    let _ = db::insert_tracked_show(&state.pool, &req.title, req.id, &req.media_type, req.poster_path, req.release_date).await;
-    Json(true)
+    match db::insert_tracked_show(&state.pool, &req.title, req.id, &req.media_type, req.poster_path, req.release_date).await {
+        Ok(_) => {
+            // Trigger an immediate scan for this specific title
+            let pool = state.pool.clone();
+            let title = req.title.clone();
+            tokio::spawn(async move {
+                let _ = crate::scan_library(pool).await;
+                info!("Post-track scan completed for: {}", title);
+            });
+            Json(true)
+        },
+        Err(e) => {
+            tracing::error!("Failed to track show: {}", e);
+            Json(false)
+        }
+    }
 }
 
 async fn get_tracked(State(state): State<AppState>) -> Json<Vec<TrackedShow>> {
