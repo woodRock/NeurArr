@@ -585,22 +585,45 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
     let metadata = Parser::parse_regex(filename);
     
     let tmdb_id = if let Some(id) = force_tmdb_id { id } else {
-        // 1. Check manual matches
+        // --- STAGE 1: LOCAL (Database & Manual) ---
         if let Ok(Some(id)) = db::get_manual_match(&pool, &metadata.title).await { 
+            info!("Ingest [LOCAL]: Found manual match for '{}'", metadata.title);
             id as u32 
         } 
-        // 2. Check already tracked shows
         else if let Ok(Some(show)) = db::get_tracked_show_by_title(&pool, &metadata.title).await {
+            info!("Ingest [LOCAL]: Found collection match for '{}'", metadata.title);
             show.tmdb_id as u32
         }
-        // 3. Hit external TMDB Search
         else {
-            info!("Ingest: No local match for '{}', searching TMDB...", metadata.title);
+            // --- STAGE 2: TMDB (Exact/Heuristic Search) ---
+            info!("Ingest [TMDB]: Searching for '{}'...", metadata.title);
             let results = if metadata.season.is_some() { tmdb.search_tv(&metadata.title, None).await? } else { tmdb.search_movie(&metadata.title, None).await? };
-            if let Some(best) = results.first() {
-                if let Ok(true) = ollama.verify_torrent_match(&metadata.title, &best.title.clone().or(best.name.clone()).unwrap()).await { best.id }
-                else { return Ok(()); }
-            } else { return Ok(()); }
+            
+            let best_match = results.iter().find(|res| {
+                let tmdb_title = res.title.clone().or(res.name.clone()).unwrap_or_default().to_lowercase().replace(|c: char| !c.is_alphanumeric(), "");
+                let search_title = metadata.title.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "");
+                tmdb_title == search_title
+            });
+
+            if let Some(m) = best_match {
+                info!("Ingest [TMDB]: Found exact title match: {}", m.title.clone().or(m.name.clone()).unwrap_or_default());
+                m.id
+            } else {
+                // --- STAGE 3: AI (Local LLM Verification) ---
+                if let Some(best) = results.first() {
+                    let target_name = best.title.clone().or(best.name.clone()).unwrap_or_default();
+                    info!("Ingest [AI]: Verifying fuzzy match '{}' vs '{}'...", metadata.title, target_name);
+                    if let Ok(true) = ollama.verify_torrent_match(&metadata.title, &target_name).await {
+                        info!("Ingest [AI]: Match confirmed by neural logic.");
+                        best.id
+                    } else {
+                        info!("Ingest: No confident match found at any stage for '{}'", metadata.title);
+                        return Ok(()); 
+                    }
+                } else {
+                    return Ok(());
+                }
+            }
         }
     };
     let details = if metadata.season.is_some() { tmdb.get_tv_details(tmdb_id).await? } else { tmdb.get_movie_details(tmdb_id).await? };
