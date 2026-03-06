@@ -319,12 +319,16 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                         } }
                                         if let Some(not) = &p.must_not_contain { 
                                             for w in not.split(',') { 
-                                                let tag = w.trim();
+                                                let tag = w.trim().to_lowercase();
                                                 if tag.is_empty() { continue; }
-                                                // Check for word boundaries or brackets to avoid partial matches like 'ts' in 'tsundere'
-                                                let patterns = [format!(" {} ", tag), format!("[{}]", tag), format!("-{}-", tag), format!(" {}-", tag), format!("-{} ", tag)];
-                                                if patterns.iter().any(|p| t.contains(p)) || (tag == "ts" && (t.contains(" ts ") || t.contains(".ts "))) {
-                                                    info!("Filtered out '{}' (contains must_not_contain: {})", r.title, tag);
+                                                
+                                                // Create a list of "words" by splitting on common separators
+                                                let title_parts: Vec<_> = t.split(|c: char| !c.is_alphanumeric())
+                                                    .filter(|s| !s.is_empty())
+                                                    .collect();
+                                                
+                                                if title_parts.contains(&tag.as_str()) {
+                                                    info!("Filtered out '{}' (contains must_not_contain tag: {})", r.title, tag);
                                                     return false; 
                                                 }
                                             } 
@@ -340,7 +344,10 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                     info!("Verifying match for torrent: '{}' with target title: '{}'", best.title, show.title);
                                     
                                     // Simple string pre-verification to save LLM time
-                                    let is_string_match = best.title.to_lowercase().contains(&show.title.to_lowercase());
+                                    let normalize = |s: &str| s.to_lowercase().chars().filter(|c| c.is_alphanumeric() || c.is_whitespace()).collect::<String>();
+                                    let target_norm = normalize(&show.title);
+                                    let torrent_norm = normalize(&best.title);
+                                    let is_string_match = torrent_norm.contains(&target_norm);
                                     
                                     let verified = if is_string_match {
                                         info!("String match confirmed for: {}", best.title);
