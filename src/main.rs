@@ -583,9 +583,19 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
 pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, force_tmdb_id: Option<u32>) -> Result<()> {
     let filename = path.file_name().unwrap().to_str().unwrap();
     let metadata = Parser::parse_regex(filename);
+    
     let tmdb_id = if let Some(id) = force_tmdb_id { id } else {
-        if let Ok(Some(id)) = db::get_manual_match(&pool, &metadata.title).await { id as u32 }
+        // 1. Check manual matches
+        if let Ok(Some(id)) = db::get_manual_match(&pool, &metadata.title).await { 
+            id as u32 
+        } 
+        // 2. Check already tracked shows
+        else if let Ok(Some(show)) = db::get_tracked_show_by_title(&pool, &metadata.title).await {
+            show.tmdb_id as u32
+        }
+        // 3. Hit external TMDB Search
         else {
+            info!("Ingest: No local match for '{}', searching TMDB...", metadata.title);
             let results = if metadata.season.is_some() { tmdb.search_tv(&metadata.title, None).await? } else { tmdb.search_movie(&metadata.title, None).await? };
             if let Some(best) = results.first() {
                 if let Ok(true) = ollama.verify_torrent_match(&metadata.title, &best.title.clone().or(best.name.clone()).unwrap()).await { best.id }

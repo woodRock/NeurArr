@@ -243,6 +243,17 @@ pub async fn get_wanted_movies(pool: &SqlitePool) -> Result<Vec<TrackedShow>> {
     Ok(sqlx::query_as::<_, TrackedShow>("SELECT * FROM tracked_shows WHERE media_type = 'movie' AND status = 'wanted' ORDER BY last_updated DESC").fetch_all(pool).await?)
 }
 
+pub async fn get_tracked_show_by_title(pool: &SqlitePool, title: &str) -> Result<Option<TrackedShow>> {
+    let normalized = title.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "");
+    let tracked = get_tracked_shows(pool).await?;
+    for show in tracked {
+        if show.title.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "") == normalized {
+            return Ok(Some(show));
+        }
+    }
+    Ok(None)
+}
+
 pub async fn update_episode_status_completed(pool: &SqlitePool, show_id: i64, season: i32, episode: i32) -> Result<()> {
     sqlx::query("UPDATE episodes SET status = 'completed' WHERE show_id = ? AND season = ? AND episode = ?").bind(show_id).bind(season as i64).bind(episode as i64).execute(pool).await?;
     Ok(())
