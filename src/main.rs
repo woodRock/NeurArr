@@ -461,7 +461,22 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                     } else {
                                         let target_words: std::collections::HashSet<_> = target_norm.split_whitespace().filter(|w| w.len() > 2).collect();
                                         let torrent_words: std::collections::HashSet<_> = torrent_norm.split_whitespace().collect();
-                                        let has_overlap = target_words.iter().any(|w| torrent_words.contains(w));
+                                        let mut has_overlap = target_words.iter().any(|w| torrent_words.contains(w));
+
+                                        // For movies, if year is known, it MUST overlap with torrent name if possible
+                                        if let Some(y) = movie.year {
+                                            let year_str = y.to_string();
+                                            if !best.title.contains(&year_str) {
+                                                // If torrent has NO year, we might still check, but if it has a WRONG year, we fail
+                                                let re = regex::Regex::new(r"(19|20)\d{2}").unwrap();
+                                                if let Some(caps) = re.find(&best.title) {
+                                                    if caps.as_str() != year_str {
+                                                        info!("Year mismatch for movie: {} (expected {})", best.title, year_str);
+                                                        has_overlap = false;
+                                                    }
+                                                }
+                                            }
+                                        }
 
                                         if !has_overlap {
                                             false
@@ -507,38 +522,56 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
     Ok(())
 }
 
+async fn is_file_locked(path: &PathBuf) -> bool {
+    // Try to open the file in write mode to see if it's locked by another process (like qbit)
+    match std::fs::OpenOptions::new().write(true).open(path) {
+        Ok(_) => false, // We can open it for writing, so it's likely not locked
+        Err(_) => true,  // Could not open, likely locked
+    }
+}
+
 async fn wait_for_torrent_completion(path: &PathBuf, qbit: &Arc<crate::integrations::torrent::QBittorrentClient>) -> bool {
     let filename = path.file_name().unwrap().to_string_lossy().to_string();
     
     for _ in 0..120 { // Timeout after 10 minutes
+        let mut qbit_says_done = false;
         if let Ok(torrents) = qbit.get_torrents().await {
-            // Try to find the torrent by name. qBittorrent 'name' usually matches the folder or file name.
             if let Some(tor) = torrents.iter().find(|t| {
                 filename.contains(&t.name) || t.name.contains(&filename)
             }) {
-                // States that indicate download is finished:
-                // 'uploading', 'stalledUP', 'queuedUP', 'checkingUP', 'forcedUP'
                 let is_finished = ["uploading", "stalledUP", "queuedUP", "checkingUP", "forcedUP"]
                     .iter().any(|&s| tor.state == s);
                 
                 if is_finished || tor.progress >= 1.0 {
-                    info!("Torrent '{}' finished downloading (state: {}). Stopping seed.", tor.name, tor.state);
-                    let _ = qbit.delete_torrent(&tor.hash, false).await;
-                    return true;
+                    qbit_says_done = true;
+                    // Don't delete yet, wait for lock check
                 }
             }
         }
-        
-        // Fallback to size stability if not found in qbit or qbit is unreachable
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    }
 
-    // Ultimate fallback: if we can't find it in qbit, check if size is stable
-    let mut last_size = 0;
-    if let Ok(m) = std::fs::metadata(path) { last_size = m.len(); }
-    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-    if let Ok(m) = std::fs::metadata(path) {
-        if m.len() > 0 && m.len() == last_size { return true; }
+        // Even if qbit is done, check if we can get an exclusive lock on the file
+        if qbit_says_done || !path.exists() {
+            if path.exists() {
+                if !is_file_locked(path).await {
+                    info!("Torrent completion verified and file is unlocked: {:?}", path);
+                    // Now safe to tell qbit to stop
+                    if let Ok(torrents) = qbit.get_torrents().await {
+                        if let Some(tor) = torrents.iter().find(|t| filename.contains(&t.name) || t.name.contains(&filename)) {
+                            let _ = qbit.delete_torrent(&tor.hash, false).await;
+                        }
+                    }
+                    return true;
+                } else {
+                    info!("qBit says done, but file is still locked by a process: {:?}", path);
+                }
+            } else {
+                // If it's a directory (complex torrent), we might need more logic, 
+                // but for single files this is usually enough.
+                if qbit_says_done { return true; }
+            }
+        }
+        
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
     }
 
     false
@@ -642,13 +675,23 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
             let dest_file = final_path.join(format!("{}.{}", new_name, ext));
             let nfo_file = final_path.join(format!("{}.nfo", new_name));
 
+            info!("Attempting to move file from {:?} to {:?}", path, dest_file);
             let _ = tokio::fs::create_dir_all(dest_file.parent().unwrap()).await;
             if path.exists() {
-                if let Err(_) = tokio::fs::rename(&path, &dest_file).await {
-                    let _ = tokio::fs::copy(&path, &dest_file).await;
-                    let _ = tokio::fs::remove_file(&path).await;
+                if let Err(e) = tokio::fs::rename(&path, &dest_file).await {
+                    info!("Rename failed (likely cross-device), trying copy: {}", e);
+                    if let Err(e) = tokio::fs::copy(&path, &dest_file).await {
+                        error!("Failed to copy file: {}", e);
+                    } else {
+                        let _ = tokio::fs::remove_file(&path).await;
+                        info!("Copy successful, original removed.");
+                    }
+                } else {
+                    info!("Rename successful.");
                 }
                 send_notification("NeurArr", &format!("Imported: {}", item.title));
+            } else {
+                error!("Source path does not exist for move: {:?}", path);
             }
 
             let nfo_content = format!("<movie><title>{}</title><plot>{}</plot></movie>", m.title.as_deref().unwrap_or(&item.title), sf);

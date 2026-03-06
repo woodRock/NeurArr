@@ -93,15 +93,22 @@ impl OllamaClient {
 
     pub async fn verify_torrent_match(&self, target_title: &str, torrent_title: &str) -> Result<bool> {
         let prompt = format!(
-            "Does the torrent filename '{}' match the movie/show title '{}'? Answer only 'yes' or 'no'.",
-            torrent_title, target_title
+            "Task: Does the torrent filename match the EXACT movie/show title?
+Target Title: '{}'
+Torrent Filename: '{}'
+
+Rules:
+1. Return 'true' ONLY if it is an exact match or a verified alternative title.
+2. Return 'false' if it is a 'Live', 'Theatre', 'Stage', 'Musical', 'Documentary', or 'Behind the Scenes' version of the show.
+3. Return 'false' if it is a different show with a similar name.
+4. Answer ONLY with 'true' or 'false'.",
+            target_title, torrent_title
         );
         
-        let response = self.chat("You are a media matching assistant.", &prompt, false).await?;
+        let response = self.chat("You are a strict media matching expert.", &prompt, false).await?;
         let res_lower = response.to_lowercase();
         info!("LLM raw response for match: '{}'", res_lower);
         
-        // More robust check for positive response
-        Ok(res_lower.contains("yes") || res_lower.contains("true") || res_lower.contains("match"))
+        Ok(res_lower.contains("true") || (res_lower.contains("yes") && !res_lower.contains("no")))
     }
 }
