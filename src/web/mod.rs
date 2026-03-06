@@ -551,7 +551,17 @@ async fn dashboard() -> impl IntoResponse {
         async function performGlobalSearchDirect(q) { document.getElementById('search-query').value = q; performGlobalSearch(); }
         async function downloadSubtitlesForCurrent() { if(!currentDetailsId) return; const btn = document.getElementById('details-subtitles-btn'); const originalText = btn.innerText; btn.innerText = 'Searching neural indices...'; const res = await fetch(`/api/tracked/${currentDetailsId}/subtitles`, { method: 'POST' }); if(await res.json()) btn.innerText = 'Subtitles Acquired'; else btn.innerText = 'Source Exhausted'; setTimeout(() => { btn.innerText = originalText; }, 3000); }
         function initLogs() { const eventSource = new EventSource('/api/logs'); const logContainer = document.getElementById('tab-logs'); eventSource.onmessage = (e) => { const el = document.createElement('div'); el.innerText = e.data; logContainer.appendChild(el); logContainer.scrollTop = logContainer.scrollHeight; if(logContainer.children.length > 500) logContainer.removeChild(logContainer.firstChild); }; }
-        function openInteractiveSearch(title, episodeId, showId, epCode = '', year = '') { currentSearchEpisodeId = episodeId; currentSearchShowId = showId; let query = epCode ? `${title} ${epCode}` : title; if (year) query += ` ${year}`; document.getElementById('interactive-modal-title').innerText = 'Search: ' + query; document.getElementById('interactive-search-input').value = query; document.getElementById('interactive-modal').classList.add('active'); document.getElementById('interactive-results').innerHTML = ''; performInteractiveSearch(); }
+        function openInteractiveSearch(title, episodeId, showId, epCode = '', year = '') { 
+            currentSearchEpisodeId = (episodeId === null || episodeId === undefined || episodeId === 'null') ? null : parseInt(episodeId);
+            currentSearchShowId = (showId === null || showId === undefined || showId === 'null') ? null : parseInt(showId);
+            let query = epCode ? `${title} ${epCode}` : title; 
+            if (year && year !== 'null') query += ` ${year}`; 
+            document.getElementById('interactive-modal-title').innerText = 'Search: ' + query; 
+            document.getElementById('interactive-search-input').value = query; 
+            document.getElementById('interactive-modal').classList.add('active'); 
+            document.getElementById('interactive-results').innerHTML = ''; 
+            performInteractiveSearch(); 
+        }
         function closeInteractiveModal() { document.getElementById('interactive-modal').classList.remove('active'); }
         async function performInteractiveSearch() { const query = document.getElementById('interactive-search-input').value; if(!query) return; document.getElementById('interactive-results').innerHTML = '<tr><td colspan="5" class="text-center py-10 text-slate-500 uppercase font-bold tracking-widest animate-pulse">Neural Index Query...</td></tr>'; const res = await fetch('/api/interactive-search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) }); const data = await res.json(); document.getElementById('interactive-results').innerHTML = data.length ? data.map(item => `<tr class="hover:bg-white/5 transition-colors text-[11px]"><td class="py-3 px-4 max-w-md"><div class="font-bold text-slate-200 truncate">${item.title}</div></td><td class="py-3 font-mono text-slate-400">${(item.size / 1024 / 1024 / 1024).toFixed(2)} GB</td><td class="py-3 text-center"><span class="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-500 font-black">${item.seeders}</span></td><td class="py-3 text-slate-500 italic">${item.indexer}</td><td class="py-3 pr-4 text-right"><button onclick="downloadTorrent('${item.link.replace(/'/g, "\\'")}', '${item.title.replace(/'/g, "\\'")}')" class="bg-sky-600 hover:bg-sky-500 text-white px-4 py-1.5 rounded-lg font-black text-[9px] uppercase transition-all shadow-lg shadow-sky-900/20">Download</button></td></tr>`).join('') : '<tr><td colspan="5" class="text-center py-20 text-rose-500 font-black uppercase tracking-widest">No matching clusters found</td></tr>'; }
         async function downloadTorrent(link, title) { 
@@ -559,8 +569,21 @@ async fn dashboard() -> impl IntoResponse {
                 const res = await fetch('/api/download-torrent', { 
                     method: 'POST', 
                     headers: { 'Content-Type': 'application/json' }, 
-                    body: JSON.stringify({ link, title, episode_id: currentSearchEpisodeId, show_id: currentSearchShowId }) 
+                    body: JSON.stringify({ 
+                        link, 
+                        title, 
+                        episode_id: isNaN(currentSearchEpisodeId) ? null : currentSearchEpisodeId, 
+                        show_id: isNaN(currentSearchShowId) ? null : currentSearchShowId 
+                    }) 
                 }); 
+                
+                if (!res.ok) {
+                    const errorText = await res.text();
+                    console.error("Server error:", errorText);
+                    alert('Neural uplink error: ' + res.status);
+                    return;
+                }
+
                 const success = await res.json();
                 if(success) { 
                     alert('Added to neural ingest'); closeInteractiveModal(); 
