@@ -19,10 +19,9 @@ use clap::{Parser as ClapParser, Subcommand};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, Semaphore, broadcast};
 use tracing::{info, error};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-
 use walkdir::WalkDir;
 
 #[derive(ClapParser)]
@@ -41,12 +40,45 @@ enum Commands {
     Scan,
 }
 
+use tracing_subscriber::Layer;
+
+struct BroadcastLayer {
+    tx: broadcast::Sender<String>,
+}
+
+impl<S> Layer<S> for BroadcastLayer
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        let mut visitor = LogVisitor(String::new());
+        event.record(&mut visitor);
+        let _ = self.tx.send(visitor.0);
+    }
+}
+
+struct LogVisitor(String);
+impl tracing::field::Visit for LogVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.0 = format!("{:?}", value);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
+    let (log_tx, _) = broadcast::channel(100);
+    let log_tx_clone = log_tx.clone();
+
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::registry().with(fmt::layer()).with(filter).init();
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(filter)
+        .with(BroadcastLayer { tx: log_tx_clone })
+        .init();
 
     let cli = Cli::parse();
 
@@ -71,7 +103,7 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         _ => {
-            run_daemon().await?;
+            run_daemon(log_tx).await?;
         }
     }
 
@@ -92,7 +124,6 @@ pub async fn scan_library(pool: sqlx::SqlitePool) -> Result<()> {
             if ["mkv", "mp4", "avi", "mov"].contains(&ext) {
                 let metadata = Parser::parse_regex(&filename);
                 
-                // Smart Linking: check if this file belongs to a tracked show
                 let normalized_filename_title = metadata.title.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "");
                 
                 for show in &tracked {
@@ -110,7 +141,6 @@ pub async fn scan_library(pool: sqlx::SqlitePool) -> Result<()> {
                     if is_match {
                         info!("Scanner: Matched {} to tracked show: {}", filename, show.title);
                         if let (Some(s), Some(e)) = (metadata.season, metadata.episode) {
-                            // Update episode status to completed
                             let _ = sqlx::query("UPDATE episodes SET status = 'completed' WHERE show_id = ? AND season = ? AND episode = ?")
                                 .bind(show.id).bind(s as i64).bind(e as i64).execute(&pool).await;
                         } else if show.media_type == "movie" {
@@ -127,20 +157,62 @@ pub async fn scan_library(pool: sqlx::SqlitePool) -> Result<()> {
 }
 
 async fn update_app() -> Result<()> {
-    info!("Updating NeurArr...");
-    std::process::Command::new("git").arg("pull").status()?;
-    std::process::Command::new("cargo").args(["build", "--release"]).status()?;
+    info!("Starting NeurArr update process...");
+
+    info!("Pulling latest changes from GitHub...");
+    let status = std::process::Command::new("git")
+        .arg("pull")
+        .status()
+        .context("Failed to execute git pull.")?;
+
+    if !status.success() { anyhow::bail!("Git pull failed."); }
+
+    #[cfg(windows)]
+    {
+        let exe_path = std::env::current_exe()?;
+        let old_exe = exe_path.with_extension("old");
+        if old_exe.exists() { let _ = std::fs::remove_file(&old_exe); }
+        std::fs::rename(&exe_path, &old_exe).context("Failed to rename running executable.")?;
+    }
+
+    info!("Building the latest version...");
+    let status = std::process::Command::new("cargo")
+        .args(["build", "--release"])
+        .status()
+        .context("Failed to execute cargo build.")?;
+
+    if !status.success() {
+        #[cfg(windows)]
+        {
+            let exe_path = std::env::current_exe()?;
+            let old_exe = exe_path.with_extension("old");
+            let _ = std::fs::rename(&old_exe, &exe_path);
+        }
+        anyhow::bail!("Build failed.");
+    }
+
+    info!("Update successful!");
+
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         let mut args = std::env::args();
         let cmd = args.next().unwrap();
-        let _ = std::process::Command::new(cmd).args(args).exec();
+        let err = std::process::Command::new(cmd).args(args).exec();
+        return Err(anyhow::anyhow!("Failed to restart: {}", err));
     }
+
+    #[cfg(windows)]
+    {
+        info!("Restart NeurArr manually to apply changes.");
+        std::process::exit(0);
+    }
+
+    #[cfg(not(any(unix, windows)))]
     Ok(())
 }
 
-async fn run_daemon() -> Result<()> {
+async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
     info!("NeurArr Pro starting up...");
     let pool = init_db().await?;
     let tmdb_client = TmdbClient::new()?;
@@ -181,10 +253,8 @@ async fn run_daemon() -> Result<()> {
                                 tokio::spawn(async move {
                                     let _permit = sem.acquire().await.ok();
                                     let _ = process_file(path.clone(), pool, tmdb, ollama).await;
-                                    let mut reg = registry.lock().await;
-                                    reg.remove(&path);
+                                    registry.lock().await.remove(&path);
                                 });
-
                             }
                         }
                     }
@@ -195,7 +265,7 @@ async fn run_daemon() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     };
 
-    let web_handle = start_web_server(pool.clone());
+    let web_handle = start_web_server(pool.clone(), log_tx);
 
     let scheduler_pool = pool.clone();
     let scheduler_tmdb = tmdb_client.clone();
@@ -207,7 +277,6 @@ async fn run_daemon() -> Result<()> {
         loop {
             let profile = db::get_default_quality_profile(&scheduler_pool).await.ok();
             
-            // Sync episodes
             if let Ok(tracked) = db::get_tracked_shows(&scheduler_pool).await {
                 for show in tracked {
                     if show.media_type == "tv" {
@@ -228,10 +297,6 @@ async fn run_daemon() -> Result<()> {
                 }
             }
 
-            // Quality Upgrade Check (Pro Feature)
-            // Logic to find 'completed' items and see if better quality exists on indexer
-            
-            // Standard search for wanted episodes
             if let Ok(wanted_eps) = db::get_wanted_episodes(&scheduler_pool).await {
                 for (ep, show) in wanted_eps {
                     let ep_code = format!("S{:02}E{:02}", ep.season, ep.episode);
@@ -242,25 +307,52 @@ async fn run_daemon() -> Result<()> {
                     let mut found = false;
                     for q in queries {
                         if found { break; }
-                        if let Ok(res) = indexer.search(&q).await {
-                            let filtered: Vec<_> = res.into_iter().filter(|r| {
-                                if let Some(p) = &profile {
-                                    let t = r.title.to_lowercase();
-                                    if let Some(must) = &p.must_contain { if !must.is_empty() && !t.contains(must) { return false; } }
-                                    if let Some(not) = &p.must_not_contain { for w in not.split(',') { if !w.is_empty() && t.contains(w.trim()) { return false; } } }
-                                    if p.max_resolution == "1080p" && t.contains("2160p") { return false; }
-                                }
-                                true
-                            }).collect();
-                            for best in filtered {
-                                if let Ok(true) = scheduler_ollama.verify_torrent_match(&show.title, &best.title).await {
-                                    let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
-                                    if qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
-                                        send_notification("NeurArr", &format!("Downloading: {}", best.title));
-                                        let _ = db::update_episode_status(&scheduler_pool, ep.id, "downloading").await;
-                                        found = true; break;
+                        match indexer.search(&q).await {
+                            Ok(res) => {
+                                info!("Found {} results for query: {}", res.len(), q);
+                                let filtered: Vec<_> = res.into_iter().filter(|r| {
+                                    if let Some(p) = &profile {
+                                        let t = r.title.to_lowercase();
+                                        if let Some(must) = &p.must_contain { if !must.is_empty() && !t.contains(must) { 
+                                            info!("Filtered out '{}' (missing must_contain: {})", r.title, must);
+                                            return false; 
+                                        } }
+                                        if let Some(not) = &p.must_not_contain { for w in not.split(',') { if !w.is_empty() && t.contains(w.trim()) { 
+                                            info!("Filtered out '{}' (contains must_not_contain: {})", r.title, w);
+                                            return false; 
+                                        } } }
+                                        if p.max_resolution == "1080p" && t.contains("2160p") { 
+                                            info!("Filtered out '{}' (resolution too high)", r.title);
+                                            return false; 
+                                        }
+                                    }
+                                    true
+                                }).collect();
+                                for best in filtered {
+                                    info!("Verifying match for torrent: '{}' with target title: '{}'", best.title, show.title);
+                                    match scheduler_ollama.verify_torrent_match(&show.title, &best.title).await {
+                                        Ok(true) => {
+                                            info!("LLM verified match for: {}", best.title);
+                                            let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
+                                            if qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
+                                                send_notification("NeurArr", &format!("Downloading: {}", best.title));
+                                                let _ = db::update_episode_status(&scheduler_pool, ep.id, "downloading").await;
+                                                found = true; break;
+                                            } else {
+                                                error!("Failed to add torrent to qbit: {}", best.title);
+                                            }
+                                        },
+                                        Ok(false) => {
+                                            info!("LLM rejected match for: {}", best.title);
+                                        },
+                                        Err(e) => {
+                                            error!("LLM verification error: {}", e);
+                                        }
                                     }
                                 }
+                            },
+                            Err(e) => {
+                                error!("Indexer search error for query {}: {}", q, e);
                             }
                         }
                     }
@@ -302,10 +394,7 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
 
     let media = if let Some(id) = tid {
         if item.season.is_some() { tmdb.get_tv_details(id).await.ok() }
-        else {
-            let res = tmdb.get_movie_details(id).await.ok();
-            res
-        }
+        else { tmdb.get_movie_details(id).await.ok() }
     } else {
         let res = if item.season.is_some() { tmdb.search_tv(&item.title).await? } else { tmdb.search_movie(&item.title).await? };
         if let Some(m) = res.first() {
@@ -319,8 +408,8 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
             let sf = ollama.rewrite_summary(ov).await.unwrap_or_else(|_| ov.to_string());
             let _ = db::update_summaries(&pool, item_id, m.id, ov, &sf).await;
             
-            let format_movie = db::get_setting(&pool, "rename_format_movie").await?.unwrap();
-            let format_tv = db::get_setting(&pool, "rename_format_tv").await?.unwrap();
+            let format_movie = db::get_setting(&pool, "rename_format_movie").await?.unwrap_or("{title} ({year})".to_string());
+            let format_tv = db::get_setting(&pool, "rename_format_tv").await?.unwrap_or("{title} - S{season}E{episode}".to_string());
             let library_dir = env::var("NEURARR_LIBRARY_DIR").unwrap_or_else(|_| "./library".to_string());
             
             let quality = if path.to_string_lossy().contains("2160p") { "2160p" } else { "1080p" };
@@ -343,20 +432,11 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
 
             let _ = tokio::fs::create_dir_all(dest_file.parent().unwrap()).await;
             if path.exists() {
-                // Robust move: try rename first, fallback to copy+delete for cross-volume
                 if let Err(_) = tokio::fs::rename(&path, &dest_file).await {
-                    info!("Cross-volume move detected, copying file instead...");
-                    if let Err(e) = tokio::fs::copy(&path, &dest_file).await {
-                        error!("Failed to copy file to library: {}", e);
-                    } else {
-                        let _ = tokio::fs::remove_file(&path).await;
-                        info!("Imported (via copy): {:?}", dest_file);
-                        send_notification("NeurArr", &format!("Imported: {}", item.title));
-                    }
-                } else {
-                    info!("Imported (via rename): {:?}", dest_file);
-                    send_notification("NeurArr", &format!("Imported: {}", item.title));
+                    let _ = tokio::fs::copy(&path, &dest_file).await;
+                    let _ = tokio::fs::remove_file(&path).await;
                 }
+                send_notification("NeurArr", &format!("Imported: {}", item.title));
             }
 
             let nfo_content = format!("<movie><title>{}</title><plot>{}</plot></movie>", m.title.as_deref().unwrap_or(&item.title), sf);

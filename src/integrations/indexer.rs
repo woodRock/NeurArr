@@ -24,8 +24,10 @@ struct JackettResponse {
 struct JackettResult {
     #[serde(rename = "Title")]
     title: String,
+    #[serde(rename = "Link")]
+    link: Option<String>,
     #[serde(rename = "Guid")]
-    link: String,
+    guid: Option<String>,
     #[serde(rename = "Size")]
     size: u64,
     #[serde(rename = "Seeders")]
@@ -75,18 +77,22 @@ impl IndexerClient {
         }
 
         let jackett_res = response.json::<JackettResponse>().await?;
+        let raw_results = jackett_res.results.unwrap_or_default();
+        info!("Indexer found {} raw results", raw_results.len());
         
-        let items = jackett_res.results.unwrap_or_default().into_iter()
+        let items: Vec<_> = raw_results.into_iter()
             .map(|r| TorznabItem {
                 title: r.title,
-                link: r.link,
+                link: r.link.or(r.guid).unwrap_or_default(),
                 size: r.size,
                 seeders: r.seeders.unwrap_or(0),
                 indexer: r.tracker.unwrap_or_else(|| "Unknown".to_string()),
             })
-            .filter(|item| item.seeders > 0) // Only return items with seeders
             .collect();
+
+        let with_seeders: Vec<_> = items.into_iter().filter(|item| item.seeders > 0).collect();
+        info!("Indexer has {} results after seeder filter", with_seeders.len());
             
-        Ok(items)
+        Ok(with_seeders)
     }
 }
