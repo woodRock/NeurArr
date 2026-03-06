@@ -244,10 +244,17 @@ pub async fn get_wanted_movies(pool: &SqlitePool) -> Result<Vec<TrackedShow>> {
 }
 
 pub async fn get_tracked_show_by_title(pool: &SqlitePool, title: &str) -> Result<Option<TrackedShow>> {
-    let normalized = title.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "");
+    let filename_norm = title.to_lowercase().replace(|c: char| !c.is_alphanumeric() && !c.is_whitespace(), "");
+    let filename_words: std::collections::HashSet<_> = filename_norm.split_whitespace().collect();
+    
     let tracked = get_tracked_shows(pool).await?;
     for show in tracked {
-        if show.title.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "") == normalized {
+        let show_norm = show.title.to_lowercase().replace(|c: char| !c.is_alphanumeric() && !c.is_whitespace(), "");
+        let show_words: Vec<_> = show_norm.split_whitespace().collect();
+        
+        // Match if ALL words from the database title are present in the filename
+        // This handles "Breaking Bad" matching "Breaking Bad Season 1 [1080p] [HEVC]"
+        if show_words.iter().all(|w| filename_words.contains(w)) {
             return Ok(Some(show));
         }
     }
