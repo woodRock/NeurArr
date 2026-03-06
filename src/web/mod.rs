@@ -65,6 +65,8 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         .route("/api/tracked/{id}/episodes", get(get_episodes))
         .route("/api/episodes/{id}/status", post(set_episode_status))
         .route("/api/episodes/{id}/search", post(manual_search_episode))
+        .route("/api/interactive-search", post(interactive_search))
+        .route("/api/download-torrent", post(download_torrent))
         .route("/api/torrents", get(get_torrents))
         .route("/api/sysinfo", get(get_sysinfo))
         .route("/api/disks", get(get_disks))
@@ -186,9 +188,83 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         <div id="episodes-list" class="space-y-2"></div>
     </div></div>
 
+    <div id="interactive-modal" class="modal"><div class="glass p-8 rounded-3xl w-full max-w-5xl max-h-[80vh] overflow-y-auto">
+        <div class="flex justify-between items-center mb-6">
+            <h2 id="interactive-modal-title" class="text-xl font-bold text-sky-400">Interactive Search</h2>
+            <button onclick="closeInteractiveModal()" class="text-slate-400 hover:text-white font-bold">CLOSE</button>
+        </div>
+        <div class="flex gap-4 mb-6">
+            <input type="text" id="interactive-search-input" class="flex-grow glass rounded-xl px-4 py-2 outline-none focus:ring-2 focus:ring-sky-500/50">
+            <button onclick="performInteractiveSearch()" class="bg-sky-600 px-6 py-2 rounded-xl font-bold hover:bg-sky-500 transition-colors text-sm">SEARCH</button>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse">
+                <thead><tr class="text-[10px] uppercase text-slate-500 border-b border-slate-800"><th class="pb-2 px-2">Title</th><th class="pb-2 px-2">Size</th><th class="pb-2 px-2 text-center">Seeders</th><th class="pb-2 px-2">Indexer</th><th class="pb-2 px-2 text-right">Action</th></tr></thead>
+                <tbody id="interactive-results" class="text-xs"></tbody>
+            </table>
+        </div>
+    </div></div>
+
     <script>
         let currentMatchId = null;
+        let currentSearchEpisodeId = null;
+        let currentSearchShowId = null;
         const placeholder = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjMwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMWUyOTNiIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZpbGw9IiM0NzU1NjkiIGZvbnQtc2l6ZT0iMTQiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIiBkeT0iLjNlbSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+Tk8gUE9TVEVSPC90ZXh0Pjwvc3ZnPg==';
+
+        function openInteractiveSearch(title, episodeId, showId, epCode = '') {
+            currentSearchEpisodeId = episodeId;
+            currentSearchShowId = showId;
+            const query = epCode ? `${title} ${epCode}` : title;
+            document.getElementById('interactive-modal-title').innerText = 'Search: ' + query;
+            document.getElementById('interactive-search-input').value = query;
+            document.getElementById('interactive-modal').classList.add('active');
+            document.getElementById('interactive-results').innerHTML = '';
+            performInteractiveSearch();
+        }
+
+        function closeInteractiveModal() { document.getElementById('interactive-modal').classList.remove('active'); }
+
+        async function performInteractiveSearch() {
+            const query = document.getElementById('interactive-search-input').value;
+            if(!query) return;
+            document.getElementById('interactive-results').innerHTML = '<tr><td colspan="5" class="text-center py-10 text-slate-500 uppercase font-bold tracking-widest animate-pulse">Querying Indexers...</td></tr>';
+            const res = await fetch('/api/interactive-search', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query })
+            });
+            const data = await res.json();
+            document.getElementById('interactive-results').innerHTML = data.length ? data.map(item => `
+                <tr class="border-b border-slate-800/50 hover:bg-white/5 transition-colors text-[11px]">
+                    <td class="py-3 px-2 max-w-md"><div class="font-bold text-slate-200 truncate">${item.title}</div></td>
+                    <td class="py-3 px-2 text-slate-400 font-mono">${(item.size / 1024 / 1024 / 1024).toFixed(2)} GB</td>
+                    <td class="py-3 px-2 text-center"><span class="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-500 font-bold">${item.seeders}</span></td>
+                    <td class="py-3 px-2 text-slate-500 italic">${item.indexer}</td>
+                    <td class="py-3 px-2 text-right">
+                        <button onclick="downloadTorrent('${item.link.replace(/'/g, "\\'")}', '${item.title.replace(/'/g, "\\'")}')" class="bg-sky-600 hover:bg-sky-500 text-white px-3 py-1 rounded font-bold text-[10px] uppercase transition-all">Download</button>
+                    </td>
+                </tr>
+            `).join('') : '<tr><td colspan="5" class="text-center py-10 text-rose-400 font-bold">No results found on any indexers.</td></tr>';
+        }
+
+        async function downloadTorrent(link, title) {
+            const res = await fetch('/api/download-torrent', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    link, 
+                    title, 
+                    episode_id: currentSearchEpisodeId,
+                    show_id: currentSearchShowId
+                })
+            });
+            if(await res.json()) {
+                alert('Added to downloader!');
+                closeInteractiveModal();
+                if(currentSearchEpisodeId) { closeEpisodeModal(); fetchQueue(); }
+                if(currentSearchShowId) fetchTracked();
+            } else {
+                alert('Failed to add torrent.');
+            }
+        }
 
         function showTab(tab) {
             ['queue', 'tracked', 'upcoming', 'downloads', 'settings', 'search', 'calendar'].forEach(t => {
@@ -226,8 +302,13 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
                     <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all">
                         <button onclick="deleteTracked(${item.id})" class="bg-rose-600 px-4 py-2 rounded text-xs font-bold">REMOVE</button>
                     </div></div>
-                    <div class="p-3"><div class="font-bold text-sm truncate">${item.title}</div>
-                    <button onclick="openEpisodeModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-xs text-sky-400 mt-1 font-bold uppercase hover:underline">View Episodes</button></div>
+                    <div class="p-3">
+                        <div class="font-bold text-sm truncate">${item.title}</div>
+                        ${item.media_type === 'movie' ? 
+                            `<button onclick="openInteractiveSearch('${item.title.replace(/'/g, "\\'")}', null, ${item.id})" class="text-xs text-amber-400 mt-1 font-bold uppercase hover:underline">Manual Search</button>` :
+                            `<button onclick="openEpisodeModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-xs text-sky-400 mt-1 font-bold uppercase hover:underline">View Episodes</button>`
+                        }
+                    </div>
                 </div>
             `).join('') : '<div class="col-span-5 text-center text-slate-500 py-20 uppercase font-bold text-xs tracking-widest">No shows tracked yet.</div>';
         }
@@ -281,10 +362,14 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         
         async function fetchEpisodes(id) {
             const res = await fetch(`/api/tracked/${id}/episodes`); const data = await res.json();
+            const showTitle = document.getElementById('episode-modal-title').innerText;
             document.getElementById('episodes-list').innerHTML = data.length ? data.map(ep => `
                 <div class="text-[11px] p-3 bg-slate-900 rounded-xl flex justify-between items-center border border-slate-800/50">
-                    <span><b class="text-sky-400 mr-2">S${ep.season}E${ep.episode}</b> ${ep.title}</span>
-                    <span class="text-[9px] font-black uppercase text-slate-500">${ep.status}</span>
+                    <span><b class="text-sky-400 mr-2">S${ep.season}E${ep.episode}</b> ${ep.title || 'Episode ' + ep.episode}</span>
+                    <div class="flex items-center gap-3">
+                        <span class="text-[9px] font-black uppercase text-slate-500">${ep.status}</span>
+                        <button onclick="openInteractiveSearch('${showTitle.replace(/'/g, "\\'")}', ${ep.id}, null, 'S${ep.season.toString().padStart(2,'0')}E${ep.episode.toString().padStart(2,'0')}')" class="text-amber-400 hover:text-amber-300 font-bold uppercase text-[9px]">Search</button>
+                    </div>
                 </div>
             `).join('') : '<div class="text-center text-slate-500 py-10">No episodes found.</div>';
         }
@@ -538,4 +623,50 @@ async fn scan_library(State(state): State<AppState>) -> Json<bool> {
 async fn trigger_update() -> Json<bool> {
     tokio::spawn(async { let _ = std::process::Command::new(std::env::current_exe().unwrap()).arg("update").spawn(); });
     Json(true)
+}
+
+#[derive(Deserialize)]
+struct InteractiveSearchRequest { query: String }
+
+#[derive(Serialize)]
+struct InteractiveSearchResult {
+    title: String,
+    link: String,
+    size: u64,
+    seeders: u32,
+    indexer: String,
+}
+
+async fn interactive_search(State(_state): State<AppState>, Json(req): Json<InteractiveSearchRequest>) -> Json<Vec<InteractiveSearchResult>> {
+    let indexer = crate::integrations::indexer::IndexerClient::new().unwrap();
+    if let Ok(res) = indexer.search(&req.query).await {
+        let results = res.into_iter().map(|item| InteractiveSearchResult {
+            title: item.title,
+            link: item.link,
+            size: item.size,
+            seeders: item.seeders,
+            indexer: item.indexer,
+        }).collect();
+        return Json(results);
+    }
+    Json(vec![])
+}
+
+#[derive(Deserialize)]
+struct DownloadRequest { link: String, title: String, episode_id: Option<i64>, show_id: Option<i64> }
+
+async fn download_torrent(State(state): State<AppState>, Json(req): Json<DownloadRequest>) -> Json<bool> {
+    let qbit = crate::integrations::torrent::QBittorrentClient::new().unwrap();
+    let _ = qbit.login().await;
+    let ing = std::fs::canonicalize("./ingest").unwrap_or_else(|_| std::path::PathBuf::from("./ingest"));
+    if qbit.add_torrent_url(&req.link, Some(&ing.to_string_lossy())).await.is_ok() {
+        if let Some(eid) = req.episode_id {
+            let _ = db::update_episode_status(&state.pool, eid, "downloading").await;
+        }
+        if let Some(sid) = req.show_id {
+            let _ = db::update_tracked_show_status(&state.pool, sid, "downloading").await;
+        }
+        return Json(true);
+    }
+    Json(false)
 }
