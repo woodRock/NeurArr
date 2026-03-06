@@ -30,6 +30,7 @@ pub struct TmdbMediaFull {
     pub release_date: Option<String>,
     pub first_air_date: Option<String>,
     pub poster_path: Option<String>,
+    pub genres: Option<Vec<TmdbGenre>>,
 }
 
 #[derive(Clone)]
@@ -114,6 +115,34 @@ impl TmdbClient {
         Ok(response.episodes)
     }
 
+    pub async fn get_movie_recommendations(&self, id: u32) -> Result<Vec<TmdbMedia>> {
+        let url = format!(
+            "https://api.themoviedb.org/3/movie/{}/recommendations?api_key={}",
+            id, self.api_key
+        );
+        let response = self.client.get(&url).send().await?.json::<TmdbSearchResult>().await?;
+        Ok(response.results)
+    }
+
+    pub async fn get_tv_recommendations(&self, id: u32) -> Result<Vec<TmdbMedia>> {
+        let url = format!(
+            "https://api.themoviedb.org/3/tv/{}/recommendations?api_key={}",
+            id, self.api_key
+        );
+        let response = self.client.get(&url).send().await?.json::<TmdbSearchResult>().await?;
+        Ok(response.results)
+    }
+
+    pub async fn get_genres(&self, is_tv: bool) -> Result<Vec<TmdbGenre>> {
+        let media_type = if is_tv { "tv" } else { "movie" };
+        let url = format!(
+            "https://api.themoviedb.org/3/genre/{}/list?api_key={}",
+            media_type, self.api_key
+        );
+        let response = self.client.get(&url).send().await?.json::<TmdbGenreResponse>().await?;
+        Ok(response.genres)
+    }
+
     pub async fn get_alternative_titles(&self, id: u32, is_tv: bool) -> Result<Vec<String>> {
         let media_type = if is_tv { "tv" } else { "movie" };
         let url = format!(
@@ -137,6 +166,17 @@ impl TmdbClient {
         }
         Ok(titles)
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TmdbGenre {
+    pub id: u32,
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TmdbGenreResponse {
+    pub genres: Vec<TmdbGenre>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

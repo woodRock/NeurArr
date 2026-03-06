@@ -136,14 +136,15 @@ pub async fn insert_tracked_show(
     media_type: &str,
     poster_path: Option<String>,
     release_date: Option<String>,
+    genres: Option<String>,
 ) -> Result<()> {
     let year = release_date.as_deref()
         .and_then(|d| d.split('-').next())
         .and_then(|y| y.parse::<i32>().ok());
 
     sqlx::query(
-        "INSERT INTO tracked_shows (title, tmdb_id, media_type, status, poster_path, release_date, year)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO tracked_shows (title, tmdb_id, media_type, status, poster_path, release_date, year, genres)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(tmdb_id) DO UPDATE SET status = 'wanted'"
     )
     .bind(title)
@@ -153,6 +154,7 @@ pub async fn insert_tracked_show(
     .bind(poster_path)
     .bind(release_date)
     .bind(year)
+    .bind(genres)
     .execute(pool)
     .await?;
 
@@ -166,7 +168,7 @@ pub async fn get_tracked_shows(pool: &SqlitePool) -> Result<Vec<TrackedShow>> {
     Ok(items)
 }
 
-#[derive(sqlx::FromRow, serde::Serialize)]
+#[derive(sqlx::FromRow, serde::Serialize, serde::Deserialize, Clone)]
 pub struct TrackedShow {
     pub id: i64,
     pub title: String,
@@ -179,6 +181,32 @@ pub struct TrackedShow {
     pub year: Option<i64>,
     pub search_attempts: i64,
     pub last_searched_at: Option<String>,
+    pub genres: Option<String>,
+    pub rating: i64,
+    pub last_updated: String,
+}
+
+pub async fn update_tracked_show_info(
+    pool: &SqlitePool,
+    id: i64,
+    status: Option<&str>,
+    genres: Option<&str>,
+    rating: Option<i64>,
+) -> Result<()> {
+    let mut query = String::from("UPDATE tracked_shows SET last_updated = datetime('now')");
+    if status.is_some() { query.push_str(", status = ?"); }
+    if genres.is_some() { query.push_str(", genres = ?"); }
+    if rating.is_some() { query.push_str(", rating = ?"); }
+    query.push_str(" WHERE id = ?");
+
+    let mut q = sqlx::query(&query);
+    if let Some(s) = status { q = q.bind(s); }
+    if let Some(g) = genres { q = q.bind(g); }
+    if let Some(r) = rating { q = q.bind(r); }
+    q = q.bind(id);
+
+    q.execute(pool).await?;
+    Ok(())
 }
 
 pub async fn get_wanted_movies(pool: &SqlitePool) -> Result<Vec<TrackedShow>> {
@@ -313,6 +341,9 @@ pub async fn get_wanted_episodes(pool: &SqlitePool) -> Result<Vec<(Episode, Trac
             year: r.get("show_year"),
             search_attempts: 0,
             last_searched_at: None,
+            genres: None,
+            rating: 0,
+            last_updated: "".to_string(),
         };
         results.push((ep, show));
     }

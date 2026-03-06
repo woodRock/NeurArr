@@ -63,8 +63,12 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         .route("/api/tracked", get(get_tracked))
         .route("/api/tracked/{id}", delete(delete_tracked))
         .route("/api/tracked/{id}/episodes", get(get_episodes))
+        .route("/api/tracked/{id}/watched", post(mark_watched))
+        .route("/api/tracked/{id}/rating", post(rate_item))
         .route("/api/episodes/{id}/status", post(set_episode_status))
         .route("/api/episodes/{id}/search", post(manual_search_episode))
+        .route("/api/recommendations", get(get_recommendations))
+        .route("/api/preferences/chips", get(get_preference_chips))
         .route("/api/interactive-search", post(interactive_search))
         .route("/api/download-torrent", post(download_torrent))
         .route("/api/torrents", get(get_torrents))
@@ -134,6 +138,7 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         <button onclick="showTab('tracked')" id="nav-tracked">COLLECTION</button>
         <button onclick="showTab('calendar')" id="nav-calendar">CALENDAR</button>
         <button onclick="showTab('upcoming')" id="nav-upcoming">DISCOVER</button>
+        <button onclick="showTab('recommendations')" id="nav-recommendations">FOR YOU</button>
         <button onclick="showTab('downloads')" id="nav-downloads">DOWNLOADS</button>
         <button onclick="showTab('settings')" id="nav-settings">SETTINGS</button>
         <button onclick="showTab('logs')" id="nav-logs">LOGS</button>
@@ -152,7 +157,14 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         <div id="tab-queue" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
         <div id="tab-tracked" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4"></div>
         <div id="tab-calendar" class="hidden space-y-4"></div>
-        <div id="tab-upcoming" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4"></div>
+        <div id="tab-upcoming" class="hidden space-y-6">
+            <div id="preference-chips" class="flex flex-wrap gap-2 mb-4"></div>
+            <div id="upcoming-results" class="grid grid-cols-2 md:grid-cols-5 gap-4"></div>
+        </div>
+        <div id="tab-recommendations" class="hidden space-y-6">
+            <h2 class="text-xl font-bold text-sky-400">Recommended for You</h2>
+            <div id="recommendation-results" class="grid grid-cols-2 md:grid-cols-5 gap-4"></div>
+        </div>
         <div id="tab-downloads" class="hidden space-y-2"></div>
         <div id="tab-search" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4"></div>
         <div id="tab-logs" class="hidden glass p-4 rounded-xl font-mono text-[10px] h-[70vh] overflow-y-auto space-y-1" id="log-container"></div>
@@ -267,7 +279,7 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         }
 
         function showTab(tab) {
-            ['queue', 'tracked', 'upcoming', 'downloads', 'settings', 'search', 'calendar'].forEach(t => {
+            ['queue', 'tracked', 'upcoming', 'downloads', 'settings', 'search', 'calendar', 'recommendations'].forEach(t => {
                 const el = document.getElementById('tab-' + t);
                 if (el) el.classList.toggle('hidden', t !== tab);
                 const nav = document.getElementById('nav-' + t);
@@ -275,7 +287,8 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
             });
             if(tab === 'queue') fetchQueue(); 
             if(tab === 'tracked') fetchTracked(); 
-            if(tab === 'upcoming') fetchUpcoming(); 
+            if(tab === 'upcoming') { fetchUpcoming(); fetchChips(); }
+            if(tab === 'recommendations') { fetchRecommendations(); fetchChips(); }
             if(tab === 'downloads') fetchTorrents(); 
             if(tab === 'settings') fetchDisks(); 
             if(tab === 'calendar') fetchCalendar();
@@ -299,12 +312,17 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
             document.getElementById('tab-tracked').innerHTML = data.length ? data.map(item => `
                 <div class="glass rounded-xl overflow-hidden group border border-slate-800/50">
                     <div class="relative"><img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-64 w-full object-cover" onerror="this.src='${placeholder}'">
-                    <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all">
-                        <button onclick="deleteTracked(${item.id})" class="bg-rose-600 px-4 py-2 rounded text-xs font-bold">REMOVE</button>
+                    <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center transition-all gap-2">
+                        <button onclick="deleteTracked(${item.id})" class="bg-rose-600 px-4 py-2 rounded text-xs font-bold w-32">REMOVE</button>
+                        ${item.status !== 'watched' ? `<button onclick="markWatched(${item.id})" class="bg-emerald-600 px-4 py-2 rounded text-xs font-bold w-32">WATCHED</button>` : ''}
                     </div></div>
                     <div class="p-3">
                         <div class="font-bold text-sm truncate">${item.title}</div>
+                        <div class="flex items-center gap-1 mt-1">
+                            ${[1,2,3,4,5].map(i => `<span onclick="rateItem(${item.id}, ${i})" class="cursor-pointer text-[10px] ${i <= item.rating ? 'text-amber-400' : 'text-slate-600'}">★</span>`).join('')}
+                        </div>
                         ${item.status === 'downloading' ? '<div class="text-[9px] font-black bg-sky-500/20 text-sky-400 px-1.5 py-0.5 rounded inline-block mt-1 uppercase animate-pulse">Downloading</div>' : ''}
+                        ${item.status === 'watched' ? '<div class="text-[9px] font-black bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded inline-block mt-1 uppercase">Watched</div>' : ''}
                         ${item.media_type === 'movie' ? 
                             `<button onclick="openInteractiveSearch('${item.title.replace(/'/g, "\\'")}', null, ${item.id})" class="text-xs text-amber-400 mt-1 font-bold uppercase hover:underline block">Manual Search</button>` :
                             `<button onclick="openEpisodeModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-xs text-sky-400 mt-1 font-bold uppercase hover:underline block">View Episodes</button>`
@@ -388,13 +406,46 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
 
         async function fetchUpcoming() {
             const res = await fetch('/api/upcoming'); const data = await res.json();
-            document.getElementById('tab-upcoming').innerHTML = data.map(item => `
+            document.getElementById('upcoming-results').innerHTML = data.map(item => `
                 <div class="glass rounded-xl overflow-hidden p-4 border border-slate-800/50 text-center">
                     <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-48 w-full object-cover rounded shadow-lg" onerror="this.src='${placeholder}'">
                     <div class="mt-3 text-sm font-bold truncate">${item.title || item.name}</div>
                     <button onclick="track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="text-sky-400 text-[10px] font-bold mt-2 hover:underline uppercase">Track</button>
                 </div>
             `).join('');
+        }
+
+        async function fetchRecommendations() {
+            const res = await fetch('/api/recommendations'); const data = await res.json();
+            document.getElementById('recommendation-results').innerHTML = data.length ? data.map(item => `
+                <div class="glass rounded-xl overflow-hidden p-4 border border-slate-800/50 text-center">
+                    <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-48 w-full object-cover rounded shadow-lg" onerror="this.src='${placeholder}'">
+                    <div class="mt-3 text-sm font-bold truncate">${item.title || item.name}</div>
+                    <button onclick="track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="text-sky-400 text-[10px] font-bold mt-2 hover:underline uppercase">Track</button>
+                </div>
+            `).join('') : '<div class="col-span-5 text-center text-slate-500 py-20 uppercase font-bold text-xs tracking-widest">Rate some shows to get personalized recommendations!</div>';
+        }
+
+        async function fetchChips() {
+            const res = await fetch('/api/preferences/chips'); const data = await res.json();
+            document.getElementById('preference-chips').innerHTML = data.map(chip => `
+                <button onclick="document.getElementById('search-query').value='${chip}'; performGlobalSearch();" class="px-3 py-1 rounded-full bg-sky-500/10 border border-sky-500/30 text-sky-400 text-[10px] font-bold hover:bg-sky-500 hover:text-white transition-all">
+                    ${chip.toUpperCase()}
+                </button>
+            `).join('');
+        }
+
+        async function markWatched(id) {
+            await fetch(`/api/tracked/${id}/watched`, { method: 'POST' });
+            fetchTracked();
+        }
+
+        async function rateItem(id, rating) {
+            await fetch(`/api/tracked/${id}/rating`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ rating })
+            });
+            fetchTracked();
         }
 
         async function fetchCalendar() {
@@ -488,7 +539,15 @@ async fn get_calendar(State(state): State<AppState>) -> Json<Vec<CalendarEpisode
 struct TrackRequest { id: u32, title: String, poster_path: Option<String>, release_date: Option<String>, media_type: String }
 
 async fn track_show(State(state): State<AppState>, Json(req): Json<TrackRequest>) -> Json<bool> {
-    match db::insert_tracked_show(&state.pool, &req.title, req.id, &req.media_type, req.poster_path, req.release_date).await {
+    let mut genres_vec = Vec::new();
+    if let Ok(details) = if req.media_type == "tv" { state.tmdb.get_tv_details(req.id).await } else { state.tmdb.get_movie_details(req.id).await } {
+        if let Some(gs) = details.genres {
+            for g in gs { genres_vec.push(g.name); }
+        }
+    }
+    let genres_str = if genres_vec.is_empty() { None } else { Some(genres_vec.join(",")) };
+
+    match db::insert_tracked_show(&state.pool, &req.title, req.id, &req.media_type, req.poster_path, req.release_date, genres_str).await {
         Ok(_) => {
             // Trigger an immediate scan for this specific title
             let pool = state.pool.clone();
@@ -682,4 +741,68 @@ async fn download_torrent(State(state): State<AppState>, Json(req): Json<Downloa
         return Json(true);
     }
     Json(false)
+}
+
+async fn mark_watched(State(state): State<AppState>, Path(id): Path<i64>) -> Json<bool> {
+    let _ = db::update_tracked_show_info(&state.pool, id, Some("watched"), None, None).await;
+    Json(true)
+}
+
+#[derive(Deserialize)]
+struct RateRequest { rating: i64 }
+
+async fn rate_item(State(state): State<AppState>, Path(id): Path<i64>, Json(req): Json<RateRequest>) -> Json<bool> {
+    let _ = db::update_tracked_show_info(&state.pool, id, None, None, Some(req.rating)).await;
+    Json(true)
+}
+
+async fn get_recommendations(State(state): State<AppState>) -> Json<Vec<crate::integrations::tmdb::TmdbMedia>> {
+    let mut recs = Vec::new();
+    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
+        // Take up to 3 highly rated or recently updated items to get recommendations for
+        let mut seed_items = tracked.clone();
+        seed_items.sort_by(|a, b| b.rating.cmp(&a.rating));
+        
+        for item in seed_items.iter().take(3) {
+            if item.media_type == "movie" {
+                if let Ok(results) = state.tmdb.get_movie_recommendations(item.tmdb_id as u32).await {
+                    for mut m in results {
+                        m.media_type = Some("movie".to_string());
+                        recs.push(m);
+                    }
+                }
+            } else {
+                if let Ok(results) = state.tmdb.get_tv_recommendations(item.tmdb_id as u32).await {
+                    for mut m in results {
+                        m.media_type = Some("tv".to_string());
+                        recs.push(m);
+                    }
+                }
+            }
+        }
+    }
+    
+    // De-duplicate by TMDB ID
+    let mut seen = std::collections::HashSet::new();
+    recs.retain(|m| seen.insert(m.id));
+    
+    Json(recs.into_iter().take(20).collect())
+}
+
+async fn get_preference_chips(State(state): State<AppState>) -> Json<Vec<String>> {
+    let mut genre_counts = std::collections::HashMap::new();
+    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
+        for item in tracked {
+            if let Some(genres) = item.genres {
+                for g in genres.split(',') {
+                    *genre_counts.entry(g.trim().to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+    
+    let mut chips: Vec<_> = genre_counts.into_iter().collect();
+    chips.sort_by(|a, b| b.1.cmp(&a.1));
+    
+    Json(chips.into_iter().take(10).map(|(name, _)| name).collect())
 }
