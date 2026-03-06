@@ -217,6 +217,8 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
     let pool = init_db().await?;
     let tmdb_client = TmdbClient::new()?;
     let ollama = Arc::new(OllamaClient::new()?);
+    let qbit = Arc::new(crate::integrations::torrent::QBittorrentClient::new()?);
+    let _ = qbit.login().await;
 
     let watch_path = env::var("NEURARR_INGEST_DIR").unwrap_or_else(|_| "ingest".to_string());
     if !std::path::Path::new(&watch_path).exists() { std::fs::create_dir_all(&watch_path)?; }
@@ -248,11 +250,12 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                 let pool = scanner_pool.clone();
                                 let tmdb = scanner_tmdb.clone();
                                 let ollama = scanner_ollama.clone();
+                                let qbit_clone = qbit.clone();
                                 let registry = processing_registry.clone();
                                 let sem = ai_semaphore.clone();
                                 tokio::spawn(async move {
                                     let _permit = sem.acquire().await.ok();
-                                    let _ = process_file(path.clone(), pool, tmdb, ollama).await;
+                                    let _ = process_file(path.clone(), pool, tmdb, ollama, qbit_clone).await;
                                     registry.lock().await.remove(&path);
                                 });
                             }
@@ -270,10 +273,9 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
     let scheduler_pool = pool.clone();
     let scheduler_tmdb = tmdb_client.clone();
     let scheduler_ollama = ollama.clone();
+    let scheduler_qbit = qbit.clone();
     let scheduler_handle = tokio::spawn(async move {
         let indexer = crate::integrations::indexer::IndexerClient::new().unwrap();
-        let qbit = crate::integrations::torrent::QBittorrentClient::new().unwrap();
-        let _ = qbit.login().await;
         loop {
             let profile = db::get_default_quality_profile(&scheduler_pool).await.ok();
             
@@ -365,7 +367,7 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                     if verified {
                                         info!("Verified match for: {}", best.title);
                                         let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
-                                        if qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
+                                        if scheduler_qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
                                             send_notification("NeurArr", &format!("Downloading: {}", best.title));
                                             let _ = db::update_episode_status(&scheduler_pool, ep.id, "downloading").await;
                                             found = true; break;
@@ -396,33 +398,47 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
     Ok(())
 }
 
-async fn wait_for_file_settled(path: &PathBuf) -> bool {
-    let mut last_size = 0;
-    let mut stable_count = 0;
+async fn wait_for_torrent_completion(path: &PathBuf, qbit: &Arc<crate::integrations::torrent::QBittorrentClient>) -> bool {
+    let filename = path.file_name().unwrap().to_string_lossy().to_string();
     
-    // Check every 5 seconds, need 3 consecutive matches (15 seconds of stability)
     for _ in 0..120 { // Timeout after 10 minutes
-        if let Ok(metadata) = std::fs::metadata(path) {
-            let current_size = metadata.len();
-            if current_size > 0 && current_size == last_size {
-                stable_count += 1;
-                if stable_count >= 3 {
+        if let Ok(torrents) = qbit.get_torrents().await {
+            // Try to find the torrent by name. qBittorrent 'name' usually matches the folder or file name.
+            if let Some(tor) = torrents.iter().find(|t| {
+                filename.contains(&t.name) || t.name.contains(&filename)
+            }) {
+                // States that indicate download is finished:
+                // 'uploading', 'stalledUP', 'queuedUP', 'checkingUP', 'forcedUP'
+                let is_finished = ["uploading", "stalledUP", "queuedUP", "checkingUP", "forcedUP"]
+                    .iter().any(|&s| tor.state == s);
+                
+                if is_finished || tor.progress >= 1.0 {
+                    info!("Torrent '{}' finished downloading (state: {}). Stopping seed.", tor.name, tor.state);
+                    let _ = qbit.delete_torrent(&tor.hash, false).await;
                     return true;
                 }
-            } else {
-                last_size = current_size;
-                stable_count = 0;
             }
         }
+        
+        // Fallback to size stability if not found in qbit or qbit is unreachable
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
+
+    // Ultimate fallback: if we can't find it in qbit, check if size is stable
+    let mut last_size = 0;
+    if let Ok(m) = std::fs::metadata(path) { last_size = m.len(); }
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    if let Ok(m) = std::fs::metadata(path) {
+        if m.len() > 0 && m.len() == last_size { return true; }
+    }
+
     false
 }
 
-async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>) -> Result<()> {
-    info!("Waiting for file to settle: {:?}", path);
-    if !wait_for_file_settled(&path).await {
-        anyhow::bail!("File never settled: {:?}", path);
+async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, qbit: Arc<crate::integrations::torrent::QBittorrentClient>) -> Result<()> {
+    info!("Waiting for torrent completion: {:?}", path);
+    if !wait_for_torrent_completion(&path, &qbit).await {
+        anyhow::bail!("Torrent never finished or settled: {:?}", path);
     }
     
     let filename = path.file_name().unwrap().to_string_lossy().to_string();

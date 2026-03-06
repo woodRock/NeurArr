@@ -77,11 +77,33 @@ impl QBittorrentClient {
         let response = self.client.get(&url).send().await?.json::<Vec<TorrentInfo>>().await?;
         Ok(response)
     }
+
+    pub async fn delete_torrent(&self, hash: &str, delete_files: bool) -> Result<()> {
+        let url = format!("{}/api/v2/torrents/delete", self.base_url);
+        let params = [
+            ("hashes", hash.to_string()),
+            ("deleteFiles", delete_files.to_string()),
+        ];
+        
+        let response = self.client
+            .post(&url)
+            .form(&params)
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            info!("Successfully deleted torrent: {}", hash);
+            Ok(())
+        } else {
+            anyhow::bail!("Failed to delete torrent: {}", response.status());
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct TorrentInfo {
     pub name: String,
+    pub hash: String,
     pub progress: f32,
     pub state: String,
     pub eta: u64,
