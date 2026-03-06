@@ -1014,22 +1014,32 @@ struct RateRequest { rating: i64 }
 async fn rate_item(State(state): State<AppState>, Path(id): Path<i64>, Json(req): Json<RateRequest>) -> Json<bool> { let _ = db::update_tracked_show_info(&state.pool, id, None, None, Some(req.rating)).await; Json(true) }
 
 async fn get_recommendations(State(state): State<AppState>) -> Json<Vec<crate::integrations::tmdb::TmdbMedia>> {
-    let mut recs = Vec::new();
+    use rand::seq::SliceRandom;
+    
     let tracked_shows = db::get_tracked_shows(&state.pool).await.unwrap_or_default();
     let tracked_ids: std::collections::HashSet<_> = tracked_shows.iter().map(|s| s.tmdb_id as i64).collect();
     let disapproved = db::get_disapproved_ids(&state.pool).await.unwrap_or_default();
     let approved = db::get_approved_ids(&state.pool).await.unwrap_or_default();
 
     let mut seeds = Vec::new();
-    let mut top_rated = tracked_shows.clone();
-    top_rated.sort_by(|a, b| b.rating.cmp(&a.rating));
-    for item in top_rated.iter().filter(|i| i.rating >= 4).take(5) {
-        seeds.push((item.tmdb_id as i64, item.media_type.clone()));
-    }
-    for app in approved {
-        if !seeds.iter().any(|s| s.0 == app.0) { seeds.push(app); }
+    {
+        let mut rng = rand::thread_rng();
+        let mut high_rated = tracked_shows.iter().filter(|i| i.rating >= 4).collect::<Vec<_>>();
+        high_rated.shuffle(&mut rng);
+        
+        for item in high_rated.iter().take(5) {
+            seeds.push((item.tmdb_id as i64, item.media_type.clone()));
+        }
+        
+        let mut approved_shuffled = approved.clone();
+        approved_shuffled.shuffle(&mut rng);
+        for app in approved_shuffled {
+            if !seeds.iter().any(|s| s.0 == app.0) { seeds.push(app); }
+        }
+        seeds.shuffle(&mut rng);
     }
 
+    let mut recs = Vec::new();
     for (tmdb_id, media_type) in seeds.iter().take(10) {
         if media_type == "movie" { 
             if let Ok(results) = state.tmdb.get_movie_recommendations(*tmdb_id as u32).await { 
@@ -1048,6 +1058,11 @@ async fn get_recommendations(State(state): State<AppState>) -> Json<Vec<crate::i
         !tracked_ids.contains(&(m.id as i64)) && 
         !disapproved.contains(&(m.id as i64))
     });
+
+    {
+        let mut rng = rand::thread_rng();
+        recs.shuffle(&mut rng);
+    }
     
     Json(recs.into_iter().take(20).collect())
 }
