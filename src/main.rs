@@ -232,6 +232,7 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
     let scanner_pool = pool.clone();
     let scanner_tmdb = tmdb_client.clone();
     let scanner_ollama = ollama.clone();
+    let scanner_qbit = qbit.clone();
     let scanner_handle = async move {
         let mut scanner = scanner;
         while let Some(event_res) = scanner.next_event().await {
@@ -250,7 +251,7 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                 let pool = scanner_pool.clone();
                                 let tmdb = scanner_tmdb.clone();
                                 let ollama = scanner_ollama.clone();
-                                let qbit_clone = qbit.clone();
+                                let qbit_clone = scanner_qbit.clone();
                                 let registry = processing_registry.clone();
                                 let sem = ai_semaphore.clone();
                                 tokio::spawn(async move {
