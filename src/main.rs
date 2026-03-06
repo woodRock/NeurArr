@@ -20,8 +20,9 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
-use tracing::info;
+use tracing::{info, error};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
 use walkdir::WalkDir;
 
 #[derive(ClapParser)]
@@ -180,8 +181,10 @@ async fn run_daemon() -> Result<()> {
                                 tokio::spawn(async move {
                                     let _permit = sem.acquire().await.ok();
                                     let _ = process_file(path.clone(), pool, tmdb, ollama).await;
-                                    registry.lock().await.remove(&path);
+                                    let mut reg = registry.lock().await;
+                                    reg.remove(&path);
                                 });
+
                             }
                         }
                     }
@@ -340,9 +343,20 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
 
             let _ = tokio::fs::create_dir_all(dest_file.parent().unwrap()).await;
             if path.exists() {
-                let _ = tokio::fs::rename(&path, &dest_file).await;
-                info!("Imported: {:?}", dest_file);
-                send_notification("NeurArr", &format!("Imported: {}", item.title));
+                // Robust move: try rename first, fallback to copy+delete for cross-volume
+                if let Err(_) = tokio::fs::rename(&path, &dest_file).await {
+                    info!("Cross-volume move detected, copying file instead...");
+                    if let Err(e) = tokio::fs::copy(&path, &dest_file).await {
+                        error!("Failed to copy file to library: {}", e);
+                    } else {
+                        let _ = tokio::fs::remove_file(&path).await;
+                        info!("Imported (via copy): {:?}", dest_file);
+                        send_notification("NeurArr", &format!("Imported: {}", item.title));
+                    }
+                } else {
+                    info!("Imported (via rename): {:?}", dest_file);
+                    send_notification("NeurArr", &format!("Imported: {}", item.title));
+                }
             }
 
             let nfo_content = format!("<movie><title>{}</title><plot>{}</plot></movie>", m.title.as_deref().unwrap_or(&item.title), sf);
