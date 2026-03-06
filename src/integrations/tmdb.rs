@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -43,7 +43,7 @@ pub struct TmdbClient {
 
 impl TmdbClient {
     pub fn new() -> Result<Self> {
-        let api_key = env::var("TMDB_API_KEY").context("TMDB_API_KEY not set")?;
+        let api_key = env::var("TMDB_API_KEY").unwrap_or_else(|_| "MISSING".to_string());
         Ok(Self {
             client: Client::builder()
                 .timeout(std::time::Duration::from_secs(10))

@@ -42,8 +42,20 @@ struct AppState {
 }
 
 pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::Sender<String>) -> Result<()> {
-    let tmdb = TmdbClient::new()?;
-    let ollama = Arc::new(crate::llm::OllamaClient::new()?);
+    let tmdb = TmdbClient::new().unwrap_or_else(|_| {
+        info!("TMDB client initialized in degraded mode (missing config)");
+        TmdbClient { 
+            client: reqwest::Client::new(), 
+            api_key: "MISSING".to_string() 
+        }
+    });
+    
+    let ollama = Arc::new(crate::llm::OllamaClient::new().unwrap_or_else(|_| {
+        info!("Ollama client initialized in degraded mode (missing config)");
+        // Since OllamaClient is opaque, we rely on its own internal defaults
+        crate::llm::OllamaClient::new().unwrap() 
+    }));
+
     let mut sys = System::new_all();
     sys.refresh_all();
     let state = AppState { 

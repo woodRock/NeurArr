@@ -283,9 +283,18 @@ pub async fn scan_ingest_folder(pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama
 
 async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
     let pool = init_db().await?;
-    let tmdb_client = TmdbClient::new()?;
-    let ollama = Arc::new(OllamaClient::new()?);
-    let qbit = Arc::new(QBittorrentClient::new()?);
+    let tmdb_client = TmdbClient::new().unwrap_or_else(|_| {
+        info!("TMDB client initialized in degraded mode");
+        TmdbClient { client: reqwest::Client::new(), api_key: "MISSING".to_string() }
+    });
+    let ollama = Arc::new(OllamaClient::new().unwrap_or_else(|_| {
+        info!("Ollama client initialized in degraded mode");
+        OllamaClient::new().unwrap()
+    }));
+    let qbit = Arc::new(QBittorrentClient::new().unwrap_or_else(|_| {
+        info!("qBittorrent client initialized in degraded mode");
+        QBittorrentClient::new().unwrap()
+    }));
     let _ = qbit.login().await;
 
     let scanner_pool = pool.clone();
