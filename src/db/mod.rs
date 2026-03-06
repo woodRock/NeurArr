@@ -302,6 +302,43 @@ pub async fn clear_media_queue(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
+pub async fn get_setting(pool: &SqlitePool, key: &str) -> Result<Option<String>> {
+    let row = sqlx::query("SELECT value FROM settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await?;
+    use sqlx::Row;
+    Ok(row.map(|r| r.get(0)))
+}
+
+#[allow(dead_code)]
+pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> Result<()> {
+    sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value")
+        .bind(key)
+        .bind(value)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn get_user_hash(pool: &SqlitePool, username: &str) -> Result<Option<String>> {
+    let row = sqlx::query("SELECT password_hash FROM users WHERE username = ?")
+        .bind(username)
+        .fetch_optional(pool)
+        .await?;
+    use sqlx::Row;
+    Ok(row.map(|r| r.get(0)))
+}
+
+pub async fn create_user(pool: &SqlitePool, username: &str, password_hash: &str) -> Result<()> {
+    sqlx::query("INSERT INTO users (username, password_hash) VALUES (?, ?)")
+        .bind(username)
+        .bind(password_hash)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 #[derive(sqlx::FromRow, serde::Serialize, serde::Deserialize, Clone)]
 pub struct QualityProfile {
     pub id: i64,

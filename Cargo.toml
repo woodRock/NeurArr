@@ -29,7 +29,12 @@ clap = { version = "4.5", features = ["derive"] }
 regex = "1.10"
 sysinfo = "0.30"
 chrono = "0.4"
-walkdir = "2.5.0"
+walkdir = "2.5"
+notify-rust = "4.11"
+argon2 = "0.5"
+axum-extra = { version = "0.10", features = ["cookie"] }
+rand = "0.8"
+
 
 [profile.release]
 opt-level = 3

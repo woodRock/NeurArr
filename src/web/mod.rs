@@ -1,10 +1,11 @@
 use anyhow::Result;
 use axum::{
     extract::{State, Query, Path},
-    response::Html,
+    response::{Html, IntoResponse, Redirect},
     routing::{get, post, delete},
     Json, Router,
 };
+use axum_extra::extract::cookie::{Cookie, CookieJar};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::net::SocketAddr;
@@ -49,11 +50,13 @@ pub async fn start_web_server(pool: SqlitePool) -> Result<()> {
 
     let app = Router::new()
         .route("/", get(dashboard))
+        .route("/login", get(login_page).post(handle_login))
         .route("/api/media", get(get_media))
         .route("/api/media/clear", delete(clear_queue))
         .route("/api/media/{id}/match", post(match_media))
         .route("/api/search", get(search_media))
         .route("/api/upcoming", get(get_upcoming))
+        .route("/api/calendar", get(get_calendar))
         .route("/api/track", post(track_show))
         .route("/api/tracked", get(get_tracked))
         .route("/api/tracked/{id}", delete(delete_tracked))
@@ -75,7 +78,34 @@ pub async fn start_web_server(pool: SqlitePool) -> Result<()> {
     Ok(())
 }
 
-async fn dashboard() -> Html<&'static str> {
+async fn login_page() -> Html<&'static str> {
+    Html(r#"
+<!DOCTYPE html><html><head><title>Login - NeurArr</title><script src="https://cdn.tailwindcss.com"></script></head>
+<body class="bg-slate-950 flex items-center justify-center min-h-screen">
+    <form action="/login" method="POST" class="bg-slate-900 p-8 rounded-2xl border border-slate-800 w-full max-w-sm">
+        <h1 class="text-2xl font-bold text-white mb-6">NeurArr Login</h1>
+        <input type="text" name="username" placeholder="Username" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-3 text-white mb-4">
+        <input type="password" name="password" placeholder="Password" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-3 text-white mb-6">
+        <button type="submit" class="w-full bg-sky-600 text-white font-bold py-3 rounded-lg">Login</button>
+    </form>
+</body></html>"#)
+}
+
+#[derive(Deserialize)]
+struct LoginData { username: String, password: String }
+
+async fn handle_login(State(state): State<AppState>, jar: CookieJar, axum::Form(data): axum::Form<LoginData>) -> impl IntoResponse {
+    if let Ok(Some(hash)) = db::get_user_hash(&state.pool, &data.username).await {
+        if crate::utils::auth::verify_password(&data.password, &hash) {
+            let cookie = Cookie::build(("auth", "true")).path("/").permanent();
+            return (jar.add(cookie), Redirect::to("/"));
+        }
+    }
+    (jar, Redirect::to("/login"))
+}
+
+async fn dashboard(jar: CookieJar) -> impl IntoResponse {
+    if jar.get("auth").is_none() { return Redirect::to("/login").into_response(); }
     Html(r#"
 <!DOCTYPE html>
 <html lang="en">
@@ -97,23 +127,33 @@ async fn dashboard() -> Html<&'static str> {
         <div class="font-bold text-xl mr-4">NeurArr</div>
         <button onclick="showTab('queue')" id="nav-queue" class="active">QUEUE</button>
         <button onclick="showTab('tracked')" id="nav-tracked">COLLECTION</button>
+        <button onclick="showTab('calendar')" id="nav-calendar">CALENDAR</button>
         <button onclick="showTab('upcoming')" id="nav-upcoming">DISCOVER</button>
         <button onclick="showTab('downloads')" id="nav-downloads">DOWNLOADS</button>
         <button onclick="showTab('settings')" id="nav-settings">SETTINGS</button>
-        <div class="ml-auto text-xs text-slate-400 flex gap-4">
+        <div class="ml-auto text-xs text-slate-400 flex gap-4 items-center">
             <span id="sys-cpu">CPU: 0%</span><span id="sys-ram">RAM: 0MB</span>
+            <button onclick="updateApp()" class="text-amber-400 font-bold px-2 py-1 border border-amber-400/30 rounded">UPDATE</button>
         </div>
     </nav>
 
-    <div id="tab-queue" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
-    <div id="tab-tracked" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4"></div>
-    <div id="tab-upcoming" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4"></div>
-    <div id="tab-downloads" class="hidden space-y-2"></div>
-    <div id="tab-search" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4"></div>
-    <div id="tab-settings" class="hidden glass p-8 rounded-xl">
-        <h2 class="font-bold mb-4">System</h2>
-        <div id="disk-info" class="text-sm"></div>
-        <button onclick="scanLibrary()" class="bg-sky-600 px-4 py-2 rounded mt-4 text-sm font-bold">SCAN LIBRARY</button>
+    <div class="max-w-7xl mx-auto">
+        <div class="flex gap-4 mb-8">
+            <input type="text" id="search-query" placeholder="Search movies or shows..." class="flex-grow glass rounded-xl px-6 py-3 outline-none focus:ring-2 focus:ring-sky-500/50">
+            <button onclick="performGlobalSearch()" class="bg-sky-600 px-8 py-3 rounded-xl font-semibold">Search</button>
+        </div>
+
+        <div id="tab-queue" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
+        <div id="tab-tracked" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4"></div>
+        <div id="tab-calendar" class="hidden space-y-4"></div>
+        <div id="tab-upcoming" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4"></div>
+        <div id="tab-downloads" class="hidden space-y-2"></div>
+        <div id="tab-search" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4"></div>
+        <div id="tab-settings" class="hidden glass p-8 rounded-xl">
+            <h2 class="font-bold mb-4">System</h2>
+            <div id="disk-info" class="text-sm mb-4"></div>
+            <button onclick="scanLibrary()" class="bg-sky-600 px-4 py-2 rounded text-sm font-bold">RE-SCAN LIBRARY</button>
+        </div>
     </div>
 
     <div id="match-modal" class="modal"><div class="glass p-8 rounded-2xl w-full max-w-4xl max-h-[80vh] overflow-y-auto">
@@ -124,17 +164,17 @@ async fn dashboard() -> Html<&'static str> {
     <div id="episodes-modal" class="modal"><div class="glass p-8 rounded-2xl w-full max-w-4xl max-h-[80vh] overflow-y-auto">
         <h2 id="episode-modal-title" class="font-bold mb-4"></h2>
         <button onclick="closeEpisodeModal()" class="mb-4">Close</button>
-        <div id="episodes-list" class="space-y-2"></div>
+        <div id="episodes-list" class="space-y-2 mt-4"></div>
     </div></div>
 
     <script>
         let currentMatchId = null;
         function showTab(tab) {
-            ['queue', 'tracked', 'upcoming', 'downloads', 'settings', 'search'].forEach(t => {
+            ['queue', 'tracked', 'upcoming', 'downloads', 'settings', 'search', 'calendar'].forEach(t => {
                 document.getElementById('tab-' + t)?.classList.toggle('hidden', t !== tab);
                 document.getElementById('nav-' + t)?.classList.toggle('active', t === tab);
             });
-            if(tab === 'queue') fetchQueue(); if(tab === 'tracked') fetchTracked(); if(tab === 'upcoming') fetchUpcoming(); if(tab === 'downloads') fetchTorrents(); if(tab === 'settings') fetchDisks();
+            if(tab === 'queue') fetchQueue(); if(tab === 'tracked') fetchTracked(); if(tab === 'upcoming') fetchUpcoming(); if(tab === 'downloads') fetchTorrents(); if(tab === 'settings') fetchDisks(); if(tab === 'calendar') fetchCalendar();
         }
         async function fetchQueue() {
             const res = await fetch('/api/media'); const data = await res.json();
@@ -142,20 +182,30 @@ async fn dashboard() -> Html<&'static str> {
                 <div class="glass p-4 rounded-xl card-content">
                     <img src="https://image.tmdb.org/t/p/w200${item.poster_path}" class="w-16 h-24 float-left mr-4 rounded">
                     <div class="font-bold truncate text-sm">${item.title}</div>
-                    <div class="text-[10px] text-slate-500">${item.status}</div>
-                    <button onclick="openMatchModal(${item.id}, '${item.title}')" class="text-[10px] text-sky-400 font-bold mt-2">MATCH</button>
+                    <div class="text-[10px] text-slate-500 mb-2 uppercase font-black">${item.status}</div>
+                    <button onclick="openMatchModal(${item.id}, '${item.title}')" class="text-[10px] text-sky-400 font-bold">MATCH</button>
                 </div>
             `).join('');
+        }
+        async function fetchCalendar() {
+            const res = await fetch('/api/calendar'); const data = await res.json();
+            document.getElementById('tab-calendar').innerHTML = data.length ? data.map(ep => `
+                <div class="glass p-4 rounded-xl flex justify-between items-center">
+                    <div><div class="font-bold text-sky-400">${ep.show_title}</div><div class="text-sm">S${ep.season}E${ep.episode} - ${ep.title}</div></div>
+                    <div class="text-xs text-slate-500">${ep.air_date}</div>
+                </div>
+            `).join('') : '<div class="text-center text-slate-500 py-20">No episodes airing this week.</div>';
         }
         async function fetchTracked() {
             const res = await fetch('/api/tracked'); const data = await res.json();
             document.getElementById('tab-tracked').innerHTML = data.map(item => `
-                <div class="glass rounded-xl overflow-hidden">
-                    <img src="https://image.tmdb.org/t/p/w500${item.poster_path}" class="h-64 w-full object-cover">
-                    <div class="p-3">
-                        <div class="font-bold text-sm truncate">${item.title}</div>
-                        <button onclick="openEpisodeModal(${item.id}, '${item.title}')" class="text-xs text-sky-400">EPISODES</button>
-                    </div>
+                <div class="glass rounded-xl overflow-hidden group">
+                    <div class="relative"><img src="https://image.tmdb.org/t/p/w500${item.poster_path}" class="h-64 w-full object-cover">
+                    <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all">
+                        <button onclick="deleteTracked(${item.id})" class="bg-rose-600 px-4 py-2 rounded text-xs font-bold">REMOVE</button>
+                    </div></div>
+                    <div class="p-3"><div class="font-bold text-sm truncate">${item.title}</div>
+                    <button onclick="openEpisodeModal(${item.id}, '${item.title}')" class="text-xs text-sky-400 mt-1">EPISODES</button></div>
                 </div>
             `).join('');
         }
@@ -163,7 +213,7 @@ async fn dashboard() -> Html<&'static str> {
             const res = await fetch('/api/torrents'); const data = await res.json();
             document.getElementById('tab-downloads').innerHTML = data.map(t => `
                 <div class="glass p-4 rounded-xl">
-                    <div class="flex justify-between text-xs"><span>${t.name}</span><span>${(t.progress*100).toFixed(1)}%</span></div>
+                    <div class="flex justify-between text-xs font-bold"><span>${t.name}</span><span>${(t.progress*100).toFixed(1)}%</span></div>
                     <div class="w-full h-1 bg-slate-800 mt-2"><div class="bg-sky-500 h-full" style="width:${t.progress*100}%"></div></div>
                 </div>
             `).join('');
@@ -175,22 +225,34 @@ async fn dashboard() -> Html<&'static str> {
         }
         async function fetchDisks() {
             const res = await fetch('/api/disks'); const data = await res.json();
-            document.getElementById('disk-info').innerHTML = data.map(d => `<div>${d.name}: ${d.available}GB / ${d.total}GB</div>`).join('');
+            document.getElementById('disk-info').innerHTML = data.map(d => `<div class="mb-2"><span>${d.name}: ${d.available}GB free of ${d.total}GB</span><div class="w-full h-1 bg-slate-800 mt-1"><div class="bg-sky-500 h-full" style="width:${(1 - d.available/d.total)*100}%"></div></div></div>`).join('');
         }
-        async function openMatchModal(id, title) { currentMatchId = id; document.getElementById('match-modal').classList.add('active'); }
-        function closeModal() { document.getElementById('match-modal').classList.remove('active'); }
+        async function performGlobalSearch() {
+            const query = document.getElementById('search-query').value; showTab('search');
+            const res = await fetch('/api/search?q=' + encodeURIComponent(query)); const data = await res.json();
+            document.getElementById('search-grid').innerHTML = data.map(item => `
+                <div class="glass rounded-xl overflow-hidden p-4">
+                    <img src="https://image.tmdb.org/t/p/w500${item.poster_path}" class="h-40 w-full object-cover rounded shadow-lg">
+                    <div class="mt-2 text-sm font-bold truncate">${item.title || item.name}</div>
+                    <button onclick="track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="text-sky-400 text-xs font-bold mt-2 hover:underline">TRACK</button>
+                </div>
+            `).join('');
+        }
         async function openEpisodeModal(id, title) { document.getElementById('episode-modal-title').innerText = title; document.getElementById('episodes-modal').classList.add('active'); fetchEpisodes(id); }
         function closeEpisodeModal() { document.getElementById('episodes-modal').classList.remove('active'); }
         async function fetchEpisodes(id) {
             const res = await fetch(`/api/tracked/${id}/episodes`); const data = await res.json();
-            document.getElementById('episodes-list').innerHTML = data.map(ep => `<div class="text-xs p-2 bg-slate-900 rounded flex justify-between"><span>S${ep.season}E${ep.episode} - ${ep.title}</span><span class="text-slate-500">${ep.status}</span></div>`).join('');
+            document.getElementById('episodes-list').innerHTML = data.map(ep => `<div class="text-xs p-3 bg-slate-900 rounded flex justify-between items-center"><span>S${ep.season}E${ep.episode} - ${ep.title}</span><span class="text-slate-500 font-bold uppercase">${ep.status}</span></div>`).join('');
         }
-        async function scanLibrary() { await fetch('/api/scan-library', {method:'POST'}); alert('Scanning...'); }
+        async function track(id, title, poster, date, type) { await fetch('/api/track', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:parseInt(id),title,poster_path:poster,release_date:date,media_type:type||'movie'})}); alert('Added!'); }
+        async function deleteTracked(id) { if(confirm('Remove?')) { await fetch('/api/tracked/'+id,{method:'DELETE'}); fetchTracked(); } }
+        async function updateApp() { if(confirm('Rebuild and restart?')) { await fetch('/api/update', {method:'POST'}); alert('Updating... Refresh in 30s.'); } }
+        async function scanLibrary() { await fetch('/api/scan-library', {method:'POST'}); alert('Library scan started!'); }
         showTab('queue'); setInterval(fetchSysInfo, 3000);
     </script>
 </body>
 </html>
-"#)
+"#).into_response()
 }
 
 async fn get_media(State(state): State<AppState>) -> Json<Vec<MediaItem>> {
@@ -220,6 +282,17 @@ async fn get_upcoming(State(state): State<AppState>) -> Json<Vec<crate::integrat
     let mut tv = state.tmdb.get_trending_tv().await.unwrap_or_default();
     results.append(&mut tv);
     Json(results)
+}
+
+#[derive(Serialize)]
+struct CalendarEpisode { show_title: String, season: i64, episode: i64, title: String, air_date: String }
+
+async fn get_calendar(State(state): State<AppState>) -> Json<Vec<CalendarEpisode>> {
+    let rows = sqlx::query("SELECT s.title as show_title, e.season, e.episode, e.title, e.air_date FROM episodes e JOIN tracked_shows s ON e.show_id = s.id WHERE e.air_date >= date('now') AND e.air_date <= date('now', '+7 days') ORDER BY e.air_date ASC")
+        .fetch_all(&state.pool).await.unwrap_or_default();
+    use sqlx::Row;
+    let items = rows.into_iter().map(|r| CalendarEpisode { show_title: r.get(0), season: r.get(1), episode: r.get(2), title: r.get(3), air_date: r.get(4) }).collect();
+    Json(items)
 }
 
 #[derive(Deserialize)]

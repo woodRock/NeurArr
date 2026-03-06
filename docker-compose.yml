@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  neurarr:
+    build: .
+    container_name: neurarr
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./.env:/app/.env
+      - ./neurarr.db:/app/neurarr.db
+      - ./ingest:/app/ingest
+      - ./library:/app/library
+    environment:
+      - NEURARR_INGEST_DIR=/app/ingest
+      - NEURARR_LIBRARY_DIR=/app/library
+      - DATABASE_URL=sqlite:/app/neurarr.db
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    volumes:
+      - ./ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
