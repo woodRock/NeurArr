@@ -11,7 +11,6 @@ use crate::db::init_db;
 use crate::integrations::tmdb::TmdbClient;
 use crate::llm::OllamaClient;
 use crate::parser::Parser;
-use crate::web::start_web_server;
 use crate::utils::{send_notification, Renamer};
 
 use anyhow::{Context, Result};
@@ -272,8 +271,8 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
     // Initial ingest scan on startup
     let _ = scan_ingest_folder(pool.clone(), tmdb_client.clone(), ollama.clone(), qbit.clone()).await;
 
-    let scanner_pool = pool.clone();
-    ...
+    let web_handle = crate::web::start_web_server(pool.clone(), log_tx);
+
     let scheduler_pool = pool.clone();
     let scheduler_tmdb = tmdb_client.clone();
     let scheduler_ollama = ollama.clone();
