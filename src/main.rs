@@ -134,7 +134,7 @@ async fn run_daemon() -> Result<()> {
                         for path in event.paths {
                             if path.is_file() {
                                 if path.file_name().unwrap().to_string_lossy().starts_with('.') { continue; }
-                                let mut registry = processing_registry.lock().await;
+                                let mut registry: tokio::sync::MutexGuard<std::collections::HashSet<PathBuf>> = processing_registry.lock().await;
                                 if registry.contains(&path) { continue; }
                                 registry.insert(path.clone());
                                 drop(registry);

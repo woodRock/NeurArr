@@ -120,27 +120,28 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         .card-content { word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; }
         .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 100; align-items: center; justify-content: center; }
         .modal.active { display: flex; }
+        .placeholder-poster { background: #1e293b; display: flex; align-items: center; justify-content: center; color: #475569; font-weight: bold; font-size: 10px; text-align: center; }
     </style>
 </head>
 <body class="p-4">
     <nav class="glass sticky top-0 flex gap-4 p-4 mb-4 rounded-xl items-center">
-        <div class="font-bold text-xl mr-4">NeurArr</div>
+        <div class="font-bold text-xl mr-4 text-sky-400">NeurArr</div>
         <button onclick="showTab('queue')" id="nav-queue" class="active">QUEUE</button>
         <button onclick="showTab('tracked')" id="nav-tracked">COLLECTION</button>
         <button onclick="showTab('calendar')" id="nav-calendar">CALENDAR</button>
         <button onclick="showTab('upcoming')" id="nav-upcoming">DISCOVER</button>
         <button onclick="showTab('downloads')" id="nav-downloads">DOWNLOADS</button>
         <button onclick="showTab('settings')" id="nav-settings">SETTINGS</button>
-        <div class="ml-auto text-xs text-slate-400 flex gap-4 items-center">
+        <div class="ml-auto text-[10px] text-slate-400 flex gap-4 items-center font-bold">
             <span id="sys-cpu">CPU: 0%</span><span id="sys-ram">RAM: 0MB</span>
-            <button onclick="updateApp()" class="text-amber-400 font-bold px-2 py-1 border border-amber-400/30 rounded">UPDATE</button>
+            <button onclick="updateApp()" class="text-amber-400 px-2 py-1 border border-amber-400/30 rounded">UPDATE</button>
         </div>
     </nav>
 
     <div class="max-w-7xl mx-auto">
         <div class="flex gap-4 mb-8">
             <input type="text" id="search-query" placeholder="Search movies or shows..." class="flex-grow glass rounded-xl px-6 py-3 outline-none focus:ring-2 focus:ring-sky-500/50">
-            <button onclick="performGlobalSearch()" class="bg-sky-600 px-8 py-3 rounded-xl font-semibold">Search</button>
+            <button onclick="performGlobalSearch()" class="bg-sky-600 px-8 py-3 rounded-xl font-semibold hover:bg-sky-500 transition-colors">Search</button>
         </div>
 
         <div id="tab-queue" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
@@ -149,106 +150,196 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         <div id="tab-upcoming" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4"></div>
         <div id="tab-downloads" class="hidden space-y-2"></div>
         <div id="tab-search" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4"></div>
+        
         <div id="tab-settings" class="hidden glass p-8 rounded-xl">
-            <h2 class="font-bold mb-4">System</h2>
-            <div id="disk-info" class="text-sm mb-4"></div>
-            <button onclick="scanLibrary()" class="bg-sky-600 px-4 py-2 rounded text-sm font-bold">RE-SCAN LIBRARY</button>
+            <h2 class="font-bold mb-4 text-xl">System Status</h2>
+            <div id="disk-info" class="space-y-4"></div>
+            <div class="mt-8 border-t border-slate-800 pt-8">
+                <button onclick="scanLibrary()" class="bg-sky-600 px-6 py-3 rounded-xl font-bold hover:bg-sky-500 transition-colors">FULL LIBRARY RE-SCAN</button>
+                <button onclick="clearQueue()" class="bg-rose-600 px-6 py-3 rounded-xl font-bold hover:bg-rose-500 transition-colors ml-4">PURGE QUEUE HISTORY</button>
+            </div>
         </div>
     </div>
 
-    <div id="match-modal" class="modal"><div class="glass p-8 rounded-2xl w-full max-w-4xl max-h-[80vh] overflow-y-auto">
-        <button onclick="closeModal()" class="mb-4">Close</button>
-        <div id="modal-results" class="grid grid-cols-3 gap-4"></div>
+    <!-- Modals -->
+    <div id="match-modal" class="modal"><div class="glass p-8 rounded-3xl w-full max-w-4xl max-h-[80vh] overflow-y-auto">
+        <div class="flex justify-between items-center mb-6">
+            <h2 class="text-xl font-bold">Manual Match Selection</h2>
+            <button onclick="closeModal()" class="text-slate-400 hover:text-white font-bold">CLOSE</button>
+        </div>
+        <div class="flex gap-4 mb-6">
+            <input type="text" id="modal-search-input" class="flex-grow glass rounded-xl px-4 py-2 outline-none focus:ring-2 focus:ring-sky-500/50">
+            <button onclick="searchInModal()" class="bg-sky-600 px-6 py-2 rounded-xl font-bold hover:bg-sky-500 transition-colors text-sm">SEARCH</button>
+        </div>
+        <div id="modal-results" class="grid grid-cols-2 md:grid-cols-3 gap-4">
+            <div class="col-span-3 text-center text-slate-500 py-10">Use the search box above to find a match.</div>
+        </div>
     </div></div>
 
-    <div id="episodes-modal" class="modal"><div class="glass p-8 rounded-2xl w-full max-w-4xl max-h-[80vh] overflow-y-auto">
-        <h2 id="episode-modal-title" class="font-bold mb-4"></h2>
-        <button onclick="closeEpisodeModal()" class="mb-4">Close</button>
-        <div id="episodes-list" class="space-y-2 mt-4"></div>
+    <div id="episodes-modal" class="modal"><div class="glass p-8 rounded-3xl w-full max-w-4xl max-h-[80vh] overflow-y-auto">
+        <div class="flex justify-between items-center mb-6">
+            <h2 id="episode-modal-title" class="text-xl font-bold"></h2>
+            <button onclick="closeEpisodeModal()" class="text-slate-400 hover:text-white font-bold">CLOSE</button>
+        </div>
+        <div id="episodes-list" class="space-y-2"></div>
     </div></div>
 
     <script>
         let currentMatchId = null;
+        const placeholder = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjMwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMWUyOTNiIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZpbGw9IiM0NzU1NjkiIGZvbnQtc2l6ZT0iMTQiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIiBkeT0iLjNlbSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+Tk8gUE9TVEVSPC90ZXh0Pjwvc3ZnPg==';
+
         function showTab(tab) {
             ['queue', 'tracked', 'upcoming', 'downloads', 'settings', 'search', 'calendar'].forEach(t => {
-                document.getElementById('tab-' + t)?.classList.toggle('hidden', t !== tab);
-                document.getElementById('nav-' + t)?.classList.toggle('active', t === tab);
+                const el = document.getElementById('tab-' + t);
+                if (el) el.classList.toggle('hidden', t !== tab);
+                const nav = document.getElementById('nav-' + t);
+                if (nav) nav.classList.toggle('active', t === tab);
             });
             if(tab === 'queue') fetchQueue(); if(tab === 'tracked') fetchTracked(); if(tab === 'upcoming') fetchUpcoming(); if(tab === 'downloads') fetchTorrents(); if(tab === 'settings') fetchDisks(); if(tab === 'calendar') fetchCalendar();
         }
+
         async function fetchQueue() {
             const res = await fetch('/api/media'); const data = await res.json();
-            document.getElementById('tab-queue').innerHTML = data.map(item => `
+            document.getElementById('tab-queue').innerHTML = data.length ? data.map(item => `
                 <div class="glass p-4 rounded-xl card-content">
-                    <img src="https://image.tmdb.org/t/p/w200${item.poster_path}" class="w-16 h-24 float-left mr-4 rounded">
-                    <div class="font-bold truncate text-sm">${item.title}</div>
-                    <div class="text-[10px] text-slate-500 mb-2 uppercase font-black">${item.status}</div>
-                    <button onclick="openMatchModal(${item.id}, '${item.title}')" class="text-[10px] text-sky-400 font-bold">MATCH</button>
+                    <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w200${item.poster_path}` : placeholder}" class="w-16 h-24 float-left mr-4 rounded shadow-lg" onerror="this.src='${placeholder}'">
+                    <div class="font-bold truncate text-sm text-sky-400">${item.title}</div>
+                    <div class="text-[9px] font-black bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded inline-block mt-1 uppercase">${item.status}</div>
+                    <div class="text-[10px] text-slate-500 mt-2 truncate">${item.original_filename}</div>
+                    <button onclick="openMatchModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-[10px] font-bold text-sky-400 mt-3 block hover:underline">MANUAL MATCH</button>
                 </div>
-            `).join('');
+            `).join('') : '<div class="col-span-3 text-center text-slate-500 py-20">Queue is empty.</div>';
         }
-        async function fetchCalendar() {
-            const res = await fetch('/api/calendar'); const data = await res.json();
-            document.getElementById('tab-calendar').innerHTML = data.length ? data.map(ep => `
-                <div class="glass p-4 rounded-xl flex justify-between items-center">
-                    <div><div class="font-bold text-sky-400">${ep.show_title}</div><div class="text-sm">S${ep.season}E${ep.episode} - ${ep.title}</div></div>
-                    <div class="text-xs text-slate-500">${ep.air_date}</div>
-                </div>
-            `).join('') : '<div class="text-center text-slate-500 py-20">No episodes airing this week.</div>';
-        }
+
         async function fetchTracked() {
             const res = await fetch('/api/tracked'); const data = await res.json();
             document.getElementById('tab-tracked').innerHTML = data.map(item => `
-                <div class="glass rounded-xl overflow-hidden group">
-                    <div class="relative"><img src="https://image.tmdb.org/t/p/w500${item.poster_path}" class="h-64 w-full object-cover">
+                <div class="glass rounded-xl overflow-hidden group border border-slate-800/50">
+                    <div class="relative"><img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-64 w-full object-cover" onerror="this.src='${placeholder}'">
                     <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all">
-                        <button onclick="deleteTracked(${item.id})" class="bg-rose-600 px-4 py-2 rounded text-xs font-bold">REMOVE</button>
+                        <button onclick="deleteTracked(${item.id})" class="bg-rose-600 text-white px-4 py-2 rounded text-xs font-bold">REMOVE</button>
                     </div></div>
                     <div class="p-3"><div class="font-bold text-sm truncate">${item.title}</div>
-                    <button onclick="openEpisodeModal(${item.id}, '${item.title}')" class="text-xs text-sky-400 mt-1">EPISODES</button></div>
+                    <button onclick="openEpisodeModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-xs text-sky-400 mt-1 font-bold uppercase">View Episodes</button></div>
                 </div>
             `).join('');
         }
+
+        async function performGlobalSearch() {
+            const query = document.getElementById('search-query').value; if(!query) return; showTab('search');
+            const res = await fetch('/api/search?q=' + encodeURIComponent(query)); const data = await res.json();
+            document.getElementById('tab-search').innerHTML = data.map(item => `
+                <div class="glass rounded-xl overflow-hidden p-4 border border-slate-800/50">
+                    <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-48 w-full object-cover rounded shadow-lg" onerror="this.src='${placeholder}'">
+                    <div class="mt-3 text-sm font-bold truncate">${item.title || item.name}</div>
+                    <div class="text-[10px] text-slate-500 mb-3">${item.release_date || item.first_air_date || 'Unknown'}</div>
+                    <button onclick="track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="w-full bg-sky-600/20 text-sky-400 py-2 rounded font-bold text-[10px] hover:bg-sky-600 hover:text-white transition-all">TRACK</button>
+                </div>
+            `).join('');
+        }
+
+        async function openMatchModal(id, title) { 
+            currentMatchId = id; 
+            document.getElementById('match-modal').classList.add('active');
+            document.getElementById('modal-search-input').value = title;
+            searchInModal();
+        }
+
+        async function searchInModal() {
+            const query = document.getElementById('modal-search-input').value;
+            if(!query) return;
+            
+            document.getElementById('modal-results').innerHTML = '<div class="col-span-3 text-center text-slate-500 py-10">Searching matches for "'+query+'"...</div>';
+            
+            try {
+                const res = await fetch('/api/search?q=' + encodeURIComponent(query)); 
+                const data = await res.json();
+                
+                if (data.length === 0) {
+                    document.getElementById('modal-results').innerHTML = '<div class="col-span-3 text-center text-rose-400 py-10">No matches found. Try refining your search.</div>';
+                    return;
+                }
+
+                document.getElementById('modal-results').innerHTML = data.map(item => `
+                    <div class="glass p-3 rounded-xl text-center border border-slate-800">
+                        <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w200${item.poster_path}` : placeholder}" class="w-full h-32 object-cover rounded shadow-md" onerror="this.src='${placeholder}'">
+                        <div class="font-bold text-[10px] mt-2 truncate w-full px-1">${item.title || item.name}</div>
+                        <div class="text-[8px] text-slate-500 mb-2">${item.release_date || item.first_air_date || ''}</div>
+                        <button onclick="applyMatch('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}')" class="text-sky-400 text-[10px] font-bold hover:underline uppercase">Select</button>
+                    </div>
+                `).join('');
+            } catch (e) {
+                document.getElementById('modal-results').innerHTML = '<div class="col-span-3 text-center text-rose-400 py-10">Error searching matches.</div>';
+            }
+        }
+
+        async function applyMatch(tmdbId, title, poster) {
+            const applyToAll = confirm('Smart Match all similar titles in queue?');
+            await fetch(`/api/media/${currentMatchId}/match`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tmdb_id: parseInt(tmdbId), title, poster_path: poster, apply_to_all: applyToAll })
+            });
+            closeModal(); fetchQueue();
+        }
+
+        function closeModal() { document.getElementById('match-modal').classList.remove('active'); }
+        async function openEpisodeModal(id, title) { document.getElementById('episode-modal-title').innerText = title; document.getElementById('episodes-modal').classList.add('active'); fetchEpisodes(id); }
+        function closeEpisodeModal() { document.getElementById('episodes-modal').classList.remove('active'); }
+        
+        async function fetchEpisodes(id) {
+            const res = await fetch(`/api/tracked/${id}/episodes`); const data = await res.json();
+            document.getElementById('episodes-list').innerHTML = data.length ? data.map(ep => `
+                <div class="text-[11px] p-3 bg-slate-900 rounded-xl flex justify-between items-center border border-slate-800/50">
+                    <span><b class="text-sky-400 mr-2">S${ep.season}E${ep.episode}</b> ${ep.title}</span>
+                    <span class="text-[9px] font-black uppercase text-slate-500">${ep.status}</span>
+                </div>
+            `).join('') : '<div class="text-center text-slate-500 py-10">Syncing episodes... check back in a minute.</div>';
+        }
+
         async function fetchTorrents() {
             const res = await fetch('/api/torrents'); const data = await res.json();
-            document.getElementById('tab-downloads').innerHTML = data.map(t => `
-                <div class="glass p-4 rounded-xl">
-                    <div class="flex justify-between text-xs font-bold"><span>${t.name}</span><span>${(t.progress*100).toFixed(1)}%</span></div>
-                    <div class="w-full h-1 bg-slate-800 mt-2"><div class="bg-sky-500 h-full" style="width:${t.progress*100}%"></div></div>
+            document.getElementById('tab-downloads').innerHTML = data.length ? data.map(t => `
+                <div class="glass p-4 rounded-xl border border-slate-800">
+                    <div class="flex justify-between text-xs font-bold mb-2"><span>${t.name}</span><span class="text-sky-400">${(t.progress*100).toFixed(1)}%</span></div>
+                    <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden"><div class="bg-sky-500 h-full transition-all duration-1000" style="width:${t.progress*100}%"></div></div>
+                    <div class="flex justify-between text-[9px] text-slate-500 mt-2 font-black"><span>${t.state.toUpperCase()}</span><span>${(t.dlspeed / 1024 / 1024).toFixed(1)} MB/S</span></div>
                 </div>
-            `).join('');
+            `).join('') : '<div class="text-center text-slate-500 py-20 font-bold uppercase tracking-widest text-xs">No active downloads in qBittorrent.</div>';
         }
+
         async function fetchSysInfo() {
             const res = await fetch('/api/sysinfo'); const data = await res.json();
             document.getElementById('sys-cpu').innerText = `CPU: ${data.cpu_usage.toFixed(1)}%`;
             document.getElementById('sys-ram').innerText = `RAM: ${data.memory_used}MB`;
         }
+
         async function fetchDisks() {
             const res = await fetch('/api/disks'); const data = await res.json();
-            document.getElementById('disk-info').innerHTML = data.map(d => `<div class="mb-2"><span>${d.name}: ${d.available}GB free of ${d.total}GB</span><div class="w-full h-1 bg-slate-800 mt-1"><div class="bg-sky-500 h-full" style="width:${(1 - d.available/d.total)*100}%"></div></div></div>`).join('');
-        }
-        async function performGlobalSearch() {
-            const query = document.getElementById('search-query').value; showTab('search');
-            const res = await fetch('/api/search?q=' + encodeURIComponent(query)); const data = await res.json();
-            document.getElementById('search-grid').innerHTML = data.map(item => `
-                <div class="glass rounded-xl overflow-hidden p-4">
-                    <img src="https://image.tmdb.org/t/p/w500${item.poster_path}" class="h-40 w-full object-cover rounded shadow-lg">
-                    <div class="mt-2 text-sm font-bold truncate">${item.title || item.name}</div>
-                    <button onclick="track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="text-sky-400 text-xs font-bold mt-2 hover:underline">TRACK</button>
+            document.getElementById('disk-info').innerHTML = data.map(d => `
+                <div class="mb-4">
+                    <div class="flex justify-between text-xs font-bold mb-1"><span>${d.name}</span><span>${d.available}GB / ${d.total}GB FREE</span></div>
+                    <div class="w-full h-1 bg-slate-800 rounded-full overflow-hidden"><div class="bg-sky-500 h-full" style="width:${(1 - d.available/d.total)*100}%"></div></div>
                 </div>
             `).join('');
         }
-        async function openEpisodeModal(id, title) { document.getElementById('episode-modal-title').innerText = title; document.getElementById('episodes-modal').classList.add('active'); fetchEpisodes(id); }
-        function closeEpisodeModal() { document.getElementById('episodes-modal').classList.remove('active'); }
-        async function fetchEpisodes(id) {
-            const res = await fetch(`/api/tracked/${id}/episodes`); const data = await res.json();
-            document.getElementById('episodes-list').innerHTML = data.map(ep => `<div class="text-xs p-3 bg-slate-900 rounded flex justify-between items-center"><span>S${ep.season}E${ep.episode} - ${ep.title}</span><span class="text-slate-500 font-bold uppercase">${ep.status}</span></div>`).join('');
+
+        async function fetchCalendar() {
+            const res = await fetch('/api/calendar'); const data = await res.json();
+            document.getElementById('tab-calendar').innerHTML = data.length ? data.map(ep => `
+                <div class="glass p-4 rounded-xl flex justify-between items-center border border-sky-500/20">
+                    <div><div class="font-bold text-sky-400 text-sm">${ep.show_title}</div><div class="text-xs text-slate-300">S${ep.season}E${ep.episode} - ${ep.title}</div></div>
+                    <div class="text-[10px] font-black text-slate-500 uppercase">${ep.air_date}</div>
+                </div>
+            `).join('') : '<div class="text-center text-slate-500 py-20 font-bold text-xs uppercase tracking-widest">No releases in the next 7 days.</div>';
         }
-        async function track(id, title, poster, date, type) { await fetch('/api/track', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:parseInt(id),title,poster_path:poster,release_date:date,media_type:type||'movie'})}); alert('Added!'); }
-        async function deleteTracked(id) { if(confirm('Remove?')) { await fetch('/api/tracked/'+id,{method:'DELETE'}); fetchTracked(); } }
-        async function updateApp() { if(confirm('Rebuild and restart?')) { await fetch('/api/update', {method:'POST'}); alert('Updating... Refresh in 30s.'); } }
-        async function scanLibrary() { await fetch('/api/scan-library', {method:'POST'}); alert('Library scan started!'); }
-        showTab('queue'); setInterval(fetchSysInfo, 3000);
+
+        async function track(id, title, poster, date, type) { await fetch('/api/track', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:parseInt(id),title,poster_path:poster,release_date:date,media_type:type||'movie'})}); alert('Added '+title+' to Collection'); }
+        async function deleteTracked(id) { if(confirm('Permanently stop tracking this show?')) { await fetch('/api/tracked/'+id,{method:'DELETE'}); fetchTracked(); } }
+        async function clearQueue() { if(confirm('Clear all processing history?')) { await fetch('/api/media/clear', {method:'DELETE'}); fetchQueue(); } }
+        async function scanLibrary() { await fetch('/api/scan-library', {method:'POST'}); alert('Full library scan started!'); }
+        async function updateApp() { if(confirm('Download latest version and rebuild?')) { await fetch('/api/update', {method:'POST'}); alert('Updating... Refresh manually in 1 minute.'); } }
+
+        showTab('queue'); setInterval(fetchSysInfo, 3000); setInterval(fetchTorrents, 5000);
     </script>
 </body>
 </html>
