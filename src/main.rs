@@ -269,16 +269,27 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
         Ok::<(), anyhow::Error>(())
     };
 
-    let web_handle = start_web_server(pool.clone(), log_tx);
+    // Initial ingest scan on startup
+    let _ = scan_ingest_folder(pool.clone(), tmdb_client.clone(), ollama.clone(), qbit.clone()).await;
 
+    let scanner_pool = pool.clone();
+    ...
     let scheduler_pool = pool.clone();
     let scheduler_tmdb = tmdb_client.clone();
     let scheduler_ollama = ollama.clone();
     let scheduler_qbit = qbit.clone();
     let scheduler_handle = tokio::spawn(async move {
         let indexer = crate::integrations::indexer::IndexerClient::new().unwrap();
+        let mut last_ingest_scan = tokio::time::Instant::now();
         loop {
+            // Periodic ingest scan every 30 minutes
+            if last_ingest_scan.elapsed().as_secs() > 1800 {
+                let _ = scan_ingest_folder(scheduler_pool.clone(), scheduler_tmdb.clone(), scheduler_ollama.clone(), scheduler_qbit.clone()).await;
+                last_ingest_scan = tokio::time::Instant::now();
+            }
+
             let profile = db::get_default_quality_profile(&scheduler_pool).await.ok();
+
             
             if let Ok(tracked) = db::get_tracked_shows(&scheduler_pool).await {
                 for show in tracked {
@@ -577,7 +588,30 @@ async fn wait_for_torrent_completion(path: &PathBuf, qbit: &Arc<crate::integrati
     false
 }
 
-async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, qbit: Arc<crate::integrations::torrent::QBittorrentClient>) -> Result<()> {
+pub async fn scan_ingest_folder(pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, qbit: Arc<crate::integrations::torrent::QBittorrentClient>) -> Result<()> {
+    let watch_path = std::env::var("NEURARR_INGEST_DIR").unwrap_or_else(|_| "ingest".to_string());
+    info!("Manual ingest scan started for: {}", watch_path);
+    
+    for entry in WalkDir::new(&watch_path).max_depth(2).into_iter().filter_map(|e| e.ok()) {
+        if entry.file_type().is_file() {
+            let path = entry.path().to_path_buf();
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+            if !["mkv", "mp4", "avi", "mov"].contains(&ext) { continue; }
+            if path.file_name().unwrap().to_string_lossy().starts_with('.') { continue; }
+
+            let pool = pool.clone();
+            let tmdb = tmdb.clone();
+            let ollama = ollama.clone();
+            let qbit = qbit.clone();
+            tokio::spawn(async move {
+                let _ = process_file(path, pool, tmdb, ollama, qbit).await;
+            });
+        }
+    }
+    Ok(())
+}
+
+pub async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, qbit: Arc<crate::integrations::torrent::QBittorrentClient>) -> Result<()> {
     info!("Waiting for torrent completion: {:?}", path);
     if !wait_for_torrent_completion(&path, &qbit).await {
         anyhow::bail!("Torrent never finished or settled: {:?}", path);

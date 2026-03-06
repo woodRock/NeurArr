@@ -101,6 +101,7 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         .route("/api/quality-profiles", get(get_profiles))
         .route("/api/update", post(trigger_update))
         .route("/api/scan-library", post(scan_library))
+        .route("/api/ingest", post(trigger_ingest))
         .layer(middleware::from_fn(auth_middleware))
         .route("/login", get(login_page).post(handle_login))
         .with_state(state);
@@ -224,9 +225,10 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         <div id="tab-settings" class="hidden glass p-8 rounded-xl">
             <h2 class="font-bold mb-4 text-xl">System Status</h2>
             <div id="disk-info" class="space-y-4"></div>
-            <div class="mt-8 border-t border-slate-800 pt-8">
+            <div class="mt-8 border-t border-slate-800 pt-8 flex gap-4">
                 <button onclick="scanLibrary()" class="bg-sky-600 px-6 py-3 rounded-xl font-bold hover:bg-sky-500 transition-colors">FULL LIBRARY RE-SCAN</button>
-                <button onclick="clearQueue()" class="bg-rose-600 px-6 py-3 rounded-xl font-bold hover:bg-rose-500 transition-colors ml-4">PURGE QUEUE HISTORY</button>
+                <button onclick="triggerIngest()" class="bg-amber-600 px-6 py-3 rounded-xl font-bold hover:bg-amber-500 transition-colors">SCAN INGEST FOLDER</button>
+                <button onclick="clearQueue()" class="bg-rose-600 px-6 py-3 rounded-xl font-bold hover:bg-rose-500 transition-colors">PURGE QUEUE HISTORY</button>
             </div>
         </div>
     </div>
@@ -682,6 +684,7 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         async function deleteTracked(id) { if(confirm('Remove?')) { await fetch('/api/tracked/'+id,{method:'DELETE'}); fetchTracked(); } }
         async function clearQueue() { if(confirm('Clear history?')) { await fetch('/api/media/clear', {method:'DELETE'}); fetchQueue(); } }
         async function scanLibrary() { await fetch('/api/scan-library', {method:'POST'}); alert('Scan started!'); }
+        async function triggerIngest() { await fetch('/api/ingest', {method:'POST'}); alert('Ingest scan started!'); }
         async function updateApp() { if(confirm('Update?')) { await fetch('/api/update', {method:'POST'}); alert('Updating...'); } }
 
         function initLogs() {
@@ -998,6 +1001,23 @@ async fn get_activity(State(state): State<AppState>) -> Json<Vec<ActivityItem>> 
     }
 
     Json(activity)
+}
+
+async fn trigger_ingest(State(state): State<AppState>) -> Json<bool> {
+    let pool = state.pool.clone();
+    let tmdb = state.tmdb.clone();
+    let ollama = state.ollama.clone();
+    // We need a qbit client here too
+    if let Ok(qbit) = crate::integrations::torrent::QBittorrentClient::new() {
+        if qbit.login().await.is_ok() {
+            let qbit_arc = Arc::new(qbit);
+            tokio::spawn(async move {
+                let _ = crate::scan_ingest_folder(pool, tmdb, ollama, qbit_arc).await;
+            });
+            return Json(true);
+        }
+    }
+    Json(false)
 }
 
 async fn trigger_update() -> Json<bool> {
