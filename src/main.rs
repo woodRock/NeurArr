@@ -284,7 +284,7 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
 
     if let Ok(tracked) = db::get_tracked_shows(&pool).await {
         for show in tracked { 
-            if show.media_type == "tv" { let _ = sync_show_episodes(&pool, &tmdb, show.id).await; }
+            if show.media_type == "tv" && show.status != "watchlist" { let _ = sync_show_episodes(&pool, &tmdb, show.id).await; }
         }
     }
 

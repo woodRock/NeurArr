@@ -159,7 +159,7 @@ pub async fn get_wanted_episodes(pool: &SqlitePool) -> Result<Vec<(Episode, Trac
 }
 
 pub async fn get_needed_seasons(pool: &SqlitePool) -> Result<Vec<(i64, TrackedShow)>> {
-    let rows = sqlx::query("SELECT e.season, s.id as sid, s.title as stitle, s.tmdb_id, s.media_type, s.status as sstatus, s.poster_path, s.release_date, s.year, s.genres, s.rating, s.last_updated, s.total_seasons FROM episodes e JOIN tracked_shows s ON e.show_id = s.id WHERE e.status = 'wanted' AND s.media_type = 'tv' GROUP BY s.id, e.season HAVING COUNT(CASE WHEN e.status = 'wanted' THEN 1 END) >= 2").fetch_all(pool).await?;
+    let rows = sqlx::query("SELECT e.season, s.id as sid, s.title as stitle, s.tmdb_id, s.media_type, s.status as sstatus, s.poster_path, s.release_date, s.year, s.genres, s.rating, s.last_updated, s.total_seasons FROM episodes e JOIN tracked_shows s ON e.show_id = s.id WHERE e.status = 'wanted' AND s.media_type = 'tv' AND s.status != 'watchlist' GROUP BY s.id, e.season HAVING COUNT(CASE WHEN e.status = 'wanted' THEN 1 END) >= 2").fetch_all(pool).await?;
     let mut results = Vec::new();
     for r in rows {
         use sqlx::Row;
