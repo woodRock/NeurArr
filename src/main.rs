@@ -293,9 +293,11 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
             if let Ok(needed_seasons) = db::get_needed_seasons(&scheduler_pool).await {
                 for (season_num, show) in needed_seasons {
                     let s_code = format!("S{:02}", season_num);
-                    let mut queries = vec![format!("{} {}", show.title, s_code)];
+                    let mut queries = Vec::new();
+                    let year_suffix = show.year.map(|y| format!(" {}", y)).unwrap_or_default();
+                    queries.push(format!("{} {}{}", show.title, s_code, year_suffix));
                     if let Ok(alts) = scheduler_tmdb.get_alternative_titles(show.tmdb_id as u32, true).await {
-                        for alt in alts { queries.push(format!("{} {}", alt, s_code)); }
+                        for alt in alts { queries.push(format!("{} {}{}", alt, s_code, year_suffix)); }
                     }
                     
                     let mut found = false;
@@ -305,6 +307,21 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                             // Filter for season pack specific keywords
                             let filtered: Vec<_> = res.into_iter().filter(|r| {
                                 let t = r.title.to_lowercase();
+                                
+                                // Year check for season packs
+                                if let Some(y) = show.year {
+                                    let year_str = y.to_string();
+                                    let re = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap();
+                                    for caps in re.find_iter(&r.title) {
+                                        if caps.as_str() != year_str {
+                                            if t.contains(&format!("({})", caps.as_str())) || t.contains(&format!("[{}]", caps.as_str())) || t.endsWith(caps.as_str()) {
+                                                info!("Filtered season pack '{}' due to year mismatch", r.title);
+                                                return false;
+                                            }
+                                        }
+                                    }
+                                }
+
                                 t.contains(&s_code.to_lowercase()) && 
                                 (t.contains("complete") || t.contains("season") || !t.contains("e0"))
                             }).collect();
@@ -354,9 +371,11 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
             if let Ok(wanted_eps) = db::get_wanted_episodes(&scheduler_pool).await {
                 for (ep, show) in wanted_eps {
                     let ep_code = format!("S{:02}E{:02}", ep.season, ep.episode);
-                    let mut queries = vec![format!("{} {}", show.title, ep_code)];
+                    let mut queries = Vec::new();
+                    let year_suffix = show.year.map(|y| format!(" {}", y)).unwrap_or_default();
+                    queries.push(format!("{} {}{}", show.title, ep_code, year_suffix));
                     if let Ok(alts) = scheduler_tmdb.get_alternative_titles(show.tmdb_id as u32, true).await {
-                        for alt in alts { queries.push(format!("{} {}", alt, ep_code)); }
+                        for alt in alts { queries.push(format!("{} {}{}", alt, ep_code, year_suffix)); }
                     }
                     let mut found = false;
                     let mut seen_torrents = std::collections::HashSet::new();
@@ -366,6 +385,26 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                             Ok(res) => {
                                 info!("Found {} results for query: {}", res.len(), q);
                                 let filtered: Vec<_> = res.into_iter().filter(|r| {
+                                    // Year check for TV shows to avoid getting the wrong series (e.g. Avatar 2005 vs 2024)
+                                    if let Some(y) = show.year {
+                                        let year_str = y.to_string();
+                                        let re = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap();
+                                        for caps in re.find_iter(&r.title) {
+                                            if caps.as_str() != year_str {
+                                                // If we find a year that ISN'T our year, we should be suspicious.
+                                                // But we must NOT penalize years that are part of the actual title (e.g. 2001: A Space Odyssey)
+                                                // We handle this by checking if the year is at the end or in brackets (common for release years)
+                                                let t_lower = r.title.to_lowercase();
+                                                if t_lower.contains(&format!("({})", caps.as_str())) || 
+                                                   t_lower.contains(&format!("[{}]", caps.as_str())) ||
+                                                   t_lower.ends_with(caps.as_str()) {
+                                                    info!("Filtered out '{}' due to year mismatch (found {}, expected {})", r.title, caps.as_str(), year_str);
+                                                    return false;
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     if let Some(p) = &profile {
                                         let t = r.title.to_lowercase();
                                         if let Some(must) = &p.must_contain { if !must.is_empty() && !t.contains(must) { 

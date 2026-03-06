@@ -99,9 +99,10 @@ Torrent Filename: '{}'
 
 Rules:
 1. Return 'true' ONLY if it is an exact match or a verified alternative title.
-2. Return 'false' if it is a 'Live', 'Theatre', 'Stage', 'Musical', 'Documentary', or 'Behind the Scenes' version of the show.
-3. Return 'false' if it is a different show with a similar name.
-4. Answer ONLY with 'true' or 'false'.",
+2. If the torrent filename contains a year (e.g. 2024, 2005), it MUST match the correct release year for the target media. If it is a different year, return 'false'.
+3. Return 'false' if it is a 'Live', 'Theatre', 'Stage', 'Musical', 'Documentary', or 'Behind the Scenes' version of the show.
+4. Return 'false' if it is a different show with a similar name.
+5. Answer ONLY with 'true' or 'false'.",
             target_title, torrent_title
         );
         
