@@ -392,6 +392,7 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                         if scheduler_qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
                                             send_notification("NeurArr", &format!("Downloading: {}", best.title));
                                             let _ = db::update_episode_status(&scheduler_pool, ep.id, "downloading").await;
+                                            let _ = db::reset_episode_attempts(&scheduler_pool, ep.id).await;
                                             found = true; break;
                                         } else {
                                             error!("Failed to add torrent to qbit: {}", best.title);
@@ -406,6 +407,11 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                             }
                         }
                     }
+                    if !found {
+                        let _ = db::increment_episode_attempts(&scheduler_pool, ep.id).await;
+                    }
+                    // Small delay between episodes to avoid overwhelming services
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 }
             }
             tokio::time::sleep(std::time::Duration::from_secs(3600)).await;

@@ -239,11 +239,17 @@ pub async fn update_episode_status(pool: &SqlitePool, id: i64, status: &str) -> 
 
 pub async fn get_wanted_episodes(pool: &SqlitePool) -> Result<Vec<(Episode, TrackedShow)>> {
     // Join with tracked_shows to get the title for searching
+    // Implement back-off: only search if attempts < 3 OR last_searched_at < 30 mins ago
     let rows = sqlx::query(
         "SELECT e.*, s.title as show_title, s.media_type, s.tmdb_id as show_tmdb_id, s.year as show_year 
          FROM episodes e 
          JOIN tracked_shows s ON e.show_id = s.id 
-         WHERE e.status = 'wanted'"
+         WHERE e.status = 'wanted' 
+         AND (
+            e.search_attempts < 3 
+            OR e.last_searched_at IS NULL 
+            OR e.last_searched_at < datetime('now', '-30 minutes')
+         )"
     )
     .fetch_all(pool)
     .await?;
@@ -259,6 +265,8 @@ pub async fn get_wanted_episodes(pool: &SqlitePool) -> Result<Vec<(Episode, Trac
             title: r.get("title"),
             status: r.get("status"),
             air_date: r.get("air_date"),
+            search_attempts: r.get("search_attempts"),
+            last_searched_at: r.get("last_searched_at"),
         };
         let show = TrackedShow {
             id: r.get("show_id"),
@@ -285,6 +293,24 @@ pub struct Episode {
     pub title: Option<String>,
     pub status: String,
     pub air_date: Option<String>,
+    pub search_attempts: i64,
+    pub last_searched_at: Option<String>,
+}
+
+pub async fn increment_episode_attempts(pool: &SqlitePool, id: i64) -> Result<()> {
+    sqlx::query("UPDATE episodes SET search_attempts = search_attempts + 1, last_searched_at = datetime('now') WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn reset_episode_attempts(pool: &SqlitePool, id: i64) -> Result<()> {
+    sqlx::query("UPDATE episodes SET search_attempts = 0 WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 #[allow(dead_code)]
