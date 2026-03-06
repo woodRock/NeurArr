@@ -84,8 +84,11 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         .route("/api/tracked/{id}/episodes", get(get_episodes))
         .route("/api/tracked/{id}/watched", post(mark_watched))
         .route("/api/tracked/{id}/rating", post(rate_item))
+        .route("/api/tracked/{id}/seasons/{season}/status", post(bulk_set_season_status))
         .route("/api/tracked/{id}/trailers", get(get_trailers))
         .route("/api/tracked/{id}/credits", get(get_credits))
+        .route("/api/external/{type}/{id}/trailers", get(get_external_trailers))
+        .route("/api/external/{type}/{id}/credits", get(get_external_credits))
         .route("/api/episodes/{id}/status", post(set_episode_status))
         .route("/api/episodes/{id}/search", post(manual_search_episode))
         .route("/api/recommendations", get(get_recommendations))
@@ -391,24 +394,25 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         async function fetchTracked() {
             const res = await fetch('/api/tracked'); const data = await res.json();
             document.getElementById('tab-tracked').innerHTML = data.length ? data.map(item => `
-                <div class="glass rounded-xl overflow-hidden group border border-slate-800/50">
+                <div class="glass rounded-xl overflow-hidden group border border-slate-800/50 cursor-pointer" onclick="openItemDetails(${item.id}, '${item.title.replace(/'/g, "\\'")}')">
                     <div class="relative"><img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-64 w-full object-cover" onerror="this.src='${placeholder}'">
-                    <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center transition-all gap-2">
+                    <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center transition-all gap-2" onclick="event.stopPropagation()">
                         <button onclick="deleteTracked(${item.id})" class="bg-rose-600 px-4 py-2 rounded text-xs font-bold w-32">REMOVE</button>
                         ${item.status !== 'watched' ? `<button onclick="markWatched(${item.id})" class="bg-emerald-600 px-4 py-2 rounded text-xs font-bold w-32">WATCHED</button>` : ''}
                     </div></div>
                     <div class="p-3">
-                        <div class="font-bold text-sm truncate">${item.title}</div>
+                        <div class="flex justify-between items-start gap-2">
+                            <div class="font-bold text-sm truncate">${item.title}</div>
+                            <button onclick="event.stopPropagation(); openInteractiveSearch('${item.title.replace(/'/g, "\\'")}', null, ${item.id}, '', '${item.year || ''}')" class="text-amber-400 hover:text-amber-300 transition-colors">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                            </button>
+                        </div>
                         <div class="flex items-center gap-1 mt-1">
-                            ${[1,2,3,4,5].map(i => `<span onclick="rateItem(${item.id}, ${i})" class="cursor-pointer text-[10px] ${i <= item.rating ? 'text-amber-400' : 'text-slate-600'}">★</span>`).join('')}
+                            ${[1,2,3,4,5].map(i => `<span onclick="event.stopPropagation(); rateItem(${item.id}, ${i})" class="cursor-pointer text-[10px] ${i <= item.rating ? 'text-amber-400' : 'text-slate-600'}">★</span>`).join('')}
                         </div>
                         ${item.status === 'downloading' ? '<div class="text-[9px] font-black bg-sky-500/20 text-sky-400 px-1.5 py-0.5 rounded inline-block mt-1 uppercase animate-pulse">Downloading</div>' : ''}
                         ${item.status === 'watched' ? '<div class="text-[9px] font-black bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded inline-block mt-1 uppercase">Watched</div>' : ''}
-                        <button onclick="openItemDetails(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-xs text-sky-400 mt-1 font-bold uppercase hover:underline block">Details</button>
-                        ${item.media_type === 'movie' ? 
-                            `<button onclick="openInteractiveSearch('${item.title.replace(/'/g, "\\'")}', null, ${item.id}, '', '${item.year || ''}')" class="text-xs text-amber-400 mt-1 font-bold uppercase hover:underline block">Manual Search</button>` :
-                            `<button onclick="openEpisodeModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-xs text-sky-400 mt-1 font-bold uppercase hover:underline block">View Episodes</button>`
-                        }
+                        ${item.media_type === 'tv' ? `<button onclick="event.stopPropagation(); openEpisodeModal(${item.id}, '${item.title.replace(/'/g, "\\'")}')" class="text-[10px] text-sky-400 mt-2 font-black uppercase hover:underline block tracking-tighter">Manage Seasons</button>` : ''}
                     </div>
                 </div>
             `).join('') : '<div class="col-span-5 text-center text-slate-500 py-20 uppercase font-bold text-xs tracking-widest">No shows tracked yet.</div>';
@@ -464,15 +468,56 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         async function fetchEpisodes(id) {
             const res = await fetch(`/api/tracked/${id}/episodes`); const data = await res.json();
             const showTitle = document.getElementById('episode-modal-title').innerText;
-            document.getElementById('episodes-list').innerHTML = data.length ? data.map(ep => `
-                <div class="text-[11px] p-3 bg-slate-900 rounded-xl flex justify-between items-center border border-slate-800/50">
-                    <span><b class="text-sky-400 mr-2">S${ep.season}E${ep.episode}</b> ${ep.title || 'Episode ' + ep.episode}</span>
-                    <div class="flex items-center gap-3">
-                        <span class="text-[9px] font-black uppercase ${ep.status === 'downloading' ? 'text-sky-400 animate-pulse' : 'text-slate-500'}">${ep.status}</span>
-                        <button onclick="openInteractiveSearch('${showTitle.replace(/'/g, "\\'")}', ${ep.id}, null, 'S${ep.season.toString().padStart(2,'0')}E${ep.episode.toString().padStart(2,'0')}')" class="text-amber-400 hover:text-amber-300 font-bold uppercase text-[9px]">Search</button>
+            
+            // Group by season
+            const seasons = {};
+            data.forEach(ep => {
+                if(!seasons[ep.season]) seasons[ep.season] = [];
+                seasons[ep.season].push(ep);
+            });
+
+            document.getElementById('episodes-list').innerHTML = Object.keys(seasons).map(s => `
+                <div class="mb-6">
+                    <div class="flex justify-between items-center bg-white/5 p-3 rounded-xl mb-2 border border-white/5">
+                        <div class="flex items-center gap-3">
+                            <input type="checkbox" class="season-checkbox w-4 h-4 rounded border-white/10 bg-black" data-season="${s}" onclick="toggleSeason(${id}, ${s}, this.checked)">
+                            <h3 class="font-black text-sky-400 uppercase tracking-widest text-xs">Season ${s}</h3>
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="bulkSetSeasonStatus(${id}, ${s}, 'wanted')" class="text-[9px] bg-sky-600/20 text-sky-400 px-2 py-1 rounded font-bold hover:bg-sky-600 hover:text-white transition-all uppercase">Wanted</button>
+                            <button onclick="bulkSetSeasonStatus(${id}, ${s}, 'skipped')" class="text-[9px] bg-slate-800 text-slate-400 px-2 py-1 rounded font-bold hover:bg-slate-700 transition-all uppercase">Skip</button>
+                            <button onclick="bulkSetSeasonStatus(${id}, ${s}, 'completed')" class="text-[9px] bg-emerald-600/20 text-emerald-400 px-2 py-1 rounded font-bold hover:bg-emerald-600 hover:text-white transition-all uppercase">Downloaded</button>
+                            <button onclick="openInteractiveSearch('${showTitle.replace(/'/g, "\\'")}', null, ${id}, 'S${s.toString().padStart(2,'0')}')" class="text-[9px] bg-amber-600/20 text-amber-400 px-2 py-1 rounded font-bold hover:bg-amber-600 hover:text-white transition-all uppercase">Search Pack</button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 gap-1 ml-8">
+                        ${seasons[s].map(ep => `
+                            <div class="text-[10px] p-2 hover:bg-white/5 rounded-lg flex justify-between items-center transition-colors">
+                                <span class="text-slate-300"><b class="text-slate-500 mr-2">E${ep.episode}</b> ${ep.title || 'Episode ' + ep.episode}</span>
+                                <div class="flex items-center gap-3">
+                                    <span class="text-[8px] font-black uppercase ${ep.status === 'downloading' ? 'text-sky-400 animate-pulse' : (ep.status === 'completed' ? 'text-emerald-500' : 'text-slate-600')}">${ep.status}</span>
+                                    <button onclick="openInteractiveSearch('${showTitle.replace(/'/g, "\\'")}', ${ep.id}, null, 'S${ep.season.toString().padStart(2,'0')}E${ep.episode.toString().padStart(2,'0')}')" class="text-amber-400/50 hover:text-amber-400 transition-colors">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                                    </button>
+                                </div>
+                            </div>
+                        `).join('')}
                     </div>
                 </div>
-            `).join('') : '<div class="text-center text-slate-500 py-10">No episodes found.</div>';
+            `).join('') || '<div class="text-center text-slate-500 py-10">No episodes found.</div>';
+        }
+
+        async function bulkSetSeasonStatus(id, season, status) {
+            await fetch(`/api/tracked/${id}/seasons/${season}/status`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status })
+            });
+            fetchEpisodes(id);
+        }
+
+        function toggleSeason(id, season, checked) {
+            // UI only toggle for individual episode selection if we want to add that, 
+            // but the bulk buttons above are more direct.
         }
 
         async function fetchTorrents() {
@@ -489,10 +534,10 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         async function fetchUpcoming() {
             const res = await fetch('/api/upcoming'); const data = await res.json();
             document.getElementById('upcoming-results').innerHTML = data.map(item => `
-                <div class="glass rounded-xl overflow-hidden p-4 border border-slate-800/50 text-center">
-                    <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-48 w-full object-cover rounded shadow-lg" onerror="this.src='${placeholder}'">
+                <div class="glass rounded-xl overflow-hidden p-4 border border-slate-800/50 text-center cursor-pointer group hover:border-sky-500/50 transition-all" onclick="openItemDetailsExternal('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.media_type}')">
+                    <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-48 w-full object-cover rounded shadow-lg group-hover:scale-105 transition-transform" onerror="this.src='${placeholder}'">
                     <div class="mt-3 text-sm font-bold truncate">${item.title || item.name}</div>
-                    <button onclick="track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="text-sky-400 text-[10px] font-bold mt-2 hover:underline uppercase">Track</button>
+                    <button onclick="event.stopPropagation(); track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="text-sky-400 text-[10px] font-bold mt-2 hover:underline uppercase">Track</button>
                 </div>
             `).join('');
         }
@@ -500,10 +545,10 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         async function fetchRecommendations() {
             const res = await fetch('/api/recommendations'); const data = await res.json();
             document.getElementById('recommendation-results').innerHTML = data.length ? data.map(item => `
-                <div class="glass rounded-xl overflow-hidden p-4 border border-slate-800/50 text-center">
-                    <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-48 w-full object-cover rounded shadow-lg" onerror="this.src='${placeholder}'">
+                <div class="glass rounded-xl overflow-hidden p-4 border border-slate-800/50 text-center cursor-pointer group hover:border-sky-500/50 transition-all" onclick="openItemDetailsExternal('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.media_type}')">
+                    <img src="${item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : placeholder}" class="h-48 w-full object-cover rounded shadow-lg group-hover:scale-105 transition-transform" onerror="this.src='${placeholder}'">
                     <div class="mt-3 text-sm font-bold truncate">${item.title || item.name}</div>
-                    <button onclick="track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="text-sky-400 text-[10px] font-bold mt-2 hover:underline uppercase">Track</button>
+                    <button onclick="event.stopPropagation(); track('${item.id}', '${(item.title || item.name).replace(/'/g, "\\'")}', '${item.poster_path}', '${item.release_date || item.first_air_date}', '${item.media_type}')" class="text-sky-400 text-[10px] font-bold mt-2 hover:underline uppercase">Track</button>
                 </div>
             `).join('') : '<div class="col-span-5 text-center text-slate-500 py-20 uppercase font-bold text-xs tracking-widest">Rate some shows to get personalized recommendations!</div>';
         }
@@ -602,32 +647,46 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         async function openItemDetails(id, title) {
             document.getElementById('details-title').innerText = title;
             document.getElementById('item-details-modal').classList.add('active');
+            
+            const trackedRes = await fetch('/api/tracked');
+            const tracked = await trackedRes.json();
+            const item = tracked.find(t => t.id === id);
+            
+            const year = item && item.year ? ` (${item.year})` : '';
+            document.getElementById('details-title').innerText = title + year;
+
+            await loadDetails(`/api/tracked/${id}/trailers`, `/api/tracked/${id}/credits`, item);
+        }
+
+        async function openItemDetailsExternal(tmdbId, title, type) {
+            document.getElementById('details-title').innerText = title;
+            document.getElementById('item-details-modal').classList.add('active');
+            
+            // For external, we don't have the full local item yet, but we can fetch trailer/credits
+            await loadDetails(`/api/external/${type}/${tmdbId}/trailers`, `/api/external/${type}/${tmdbId}/credits`, { genres: 'Loading...' });
+        }
+
+        async function loadDetails(trailersUrl, creditsUrl, item) {
             document.getElementById('details-trailer').innerHTML = '<div class="flex items-center justify-center h-full text-slate-500 uppercase font-black tracking-widest animate-pulse">Loading Trailer...</div>';
             document.getElementById('details-cast').innerHTML = '';
             document.getElementById('details-recs-list').innerHTML = '';
             
-            // Fetch everything in parallel
-            const [trailers, credits, tracked] = await Promise.all([
-                fetch(`/api/tracked/${id}/trailers`).then(r => r.json()),
-                fetch(`/api/tracked/${id}/credits`).then(r => r.json()),
-                fetch('/api/tracked').then(r => r.json())
+            const [trailers, credits] = await Promise.all([
+                fetch(trailersUrl).then(r => r.json()),
+                fetch(creditsUrl).then(r => r.json())
             ]);
 
-            const item = tracked.find(t => t.id === id);
             if(item) {
-                document.getElementById('details-overview').innerText = "Plot: " + (item.genres ? `[${item.genres}] ` : '') + "Checking TMDB...";
-                // Get fresh details for overview if needed or use tracked info
+                document.getElementById('details-overview').innerText = "Plot: " + (item.genres ? `[${item.genres}] ` : '') + (item.overview || "Fetching plot...");
                 document.getElementById('details-genres').innerHTML = (item.genres || '').split(',').map(g => `<span class="text-[9px] bg-sky-500/10 text-sky-400 px-2 py-0.5 rounded-full border border-sky-500/20 font-bold uppercase">${g.trim()}</span>`).join('');
             }
 
-            // Render Trailer
             if(trailers.length > 0) {
                 document.getElementById('details-trailer').innerHTML = `<iframe class="w-full h-full" src="https://www.youtube.com/embed/${trailers[0].key}" frameborder="0" allowfullscreen></iframe>`;
             } else {
                 document.getElementById('details-trailer').innerHTML = '<div class="flex items-center justify-center h-full text-slate-700 uppercase font-black tracking-widest">No Trailer Available</div>';
             }
 
-            // Render Cast
             document.getElementById('details-cast').innerHTML = credits.cast.slice(0, 5).map(c => `
                 <div class="text-center">
                     <img src="${c.profile_path ? `https://image.tmdb.org/t/p/w200${c.profile_path}` : placeholder}" class="w-full aspect-[2/3] object-cover rounded-lg mb-2 border border-white/5 shadow-lg">
@@ -636,7 +695,6 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
                 </div>
             `).join('');
 
-            // Get Similar Titles (using the global recs API for now or specific recommendations)
             const recsRes = await fetch(`/api/recommendations`);
             const recs = await recsRes.json();
             document.getElementById('details-recs-list').innerHTML = recs.slice(0, 4).map(r => `
@@ -1183,6 +1241,39 @@ async fn get_credits(State(state): State<AppState>, Path(id): Path<i64>) -> Json
                 return Json(credits);
             }
         }
+    }
+    Json(crate::integrations::tmdb::TmdbCredits { cast: vec![] })
+}
+
+#[derive(Deserialize)]
+struct BulkStatusRequest { status: String }
+
+async fn bulk_set_season_status(
+    State(state): State<AppState>,
+    Path((id, season)): Path<(i64, i64)>,
+    Json(req): Json<BulkStatusRequest>,
+) -> Json<bool> {
+    let _ = db::bulk_update_episodes_status(&state.pool, id, season, &req.status).await;
+    Json(true)
+}
+
+async fn get_external_trailers(
+    State(state): State<AppState>,
+    Path((media_type, id)): Path<(String, u32)>,
+) -> Json<Vec<crate::integrations::tmdb::TmdbVideo>> {
+    if let Ok(videos) = state.tmdb.get_videos(id, media_type == "tv").await {
+        let trailers: Vec<_> = videos.into_iter().filter(|v| v.r#type == "Trailer").collect();
+        return Json(trailers);
+    }
+    Json(vec![])
+}
+
+async fn get_external_credits(
+    State(state): State<AppState>,
+    Path((media_type, id)): Path<(String, u32)>,
+) -> Json<crate::integrations::tmdb::TmdbCredits> {
+    if let Ok(credits) = state.tmdb.get_credits(id, media_type == "tv").await {
+        return Json(credits);
     }
     Json(crate::integrations::tmdb::TmdbCredits { cast: vec![] })
 }

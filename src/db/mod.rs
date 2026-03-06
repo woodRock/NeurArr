@@ -653,3 +653,13 @@ pub async fn update_season_status(pool: &SqlitePool, show_id: i64, season: i64, 
         .await?;
     Ok(())
 }
+
+pub async fn bulk_update_episodes_status(pool: &SqlitePool, show_id: i64, season: i64, status: &str) -> Result<()> {
+    sqlx::query("UPDATE episodes SET status = ? WHERE show_id = ? AND season = ?")
+        .bind(status)
+        .bind(show_id)
+        .bind(season)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
