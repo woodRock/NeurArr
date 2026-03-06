@@ -34,6 +34,7 @@ notify-rust = "4.11"
 argon2 = "0.5"
 axum-extra = { version = "0.10", features = ["cookie"] }
 rand = "0.8"
+async-stream = "0.3.6"
 
 
 [profile.release]

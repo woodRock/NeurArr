@@ -34,9 +34,10 @@ struct AppState {
     tmdb: TmdbClient,
     ollama: Arc<crate::llm::OllamaClient>,
     sys: Arc<StdMutex<System>>,
+    log_tx: tokio::sync::broadcast::Sender<String>,
 }
 
-pub async fn start_web_server(pool: SqlitePool) -> Result<()> {
+pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::Sender<String>) -> Result<()> {
     let tmdb = TmdbClient::new()?;
     let ollama = Arc::new(crate::llm::OllamaClient::new()?);
     let mut sys = System::new_all();
@@ -45,7 +46,8 @@ pub async fn start_web_server(pool: SqlitePool) -> Result<()> {
         pool, 
         tmdb, 
         ollama,
-        sys: Arc::new(StdMutex::new(sys)) 
+        sys: Arc::new(StdMutex::new(sys)),
+        log_tx
     };
 
     let app = Router::new()
@@ -66,6 +68,7 @@ pub async fn start_web_server(pool: SqlitePool) -> Result<()> {
         .route("/api/torrents", get(get_torrents))
         .route("/api/sysinfo", get(get_sysinfo))
         .route("/api/disks", get(get_disks))
+        .route("/api/logs", get(stream_logs))
         .route("/api/quality-profiles", get(get_profiles))
         .route("/api/update", post(trigger_update))
         .route("/api/scan-library", post(scan_library))
@@ -131,6 +134,7 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         <button onclick="showTab('upcoming')" id="nav-upcoming">DISCOVER</button>
         <button onclick="showTab('downloads')" id="nav-downloads">DOWNLOADS</button>
         <button onclick="showTab('settings')" id="nav-settings">SETTINGS</button>
+        <button onclick="showTab('logs')" id="nav-logs">LOGS</button>
         <div class="ml-auto text-[10px] text-slate-400 flex gap-4 items-center font-bold">
             <span id="sys-cpu">CPU: 0%</span><span id="sys-ram">RAM: 0MB</span>
             <button onclick="updateApp()" class="text-amber-400 px-2 py-1 border border-amber-400/30 rounded">UPDATE</button>
@@ -149,6 +153,7 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         <div id="tab-upcoming" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4"></div>
         <div id="tab-downloads" class="hidden space-y-2"></div>
         <div id="tab-search" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4"></div>
+        <div id="tab-logs" class="hidden glass p-4 rounded-xl font-mono text-[10px] h-[70vh] overflow-y-auto space-y-1" id="log-container"></div>
         
         <div id="tab-settings" class="hidden glass p-8 rounded-xl">
             <h2 class="font-bold mb-4 text-xl">System Status</h2>
@@ -333,7 +338,20 @@ async fn dashboard(jar: CookieJar) -> impl IntoResponse {
         async function scanLibrary() { await fetch('/api/scan-library', {method:'POST'}); alert('Scan started!'); }
         async function updateApp() { if(confirm('Update?')) { await fetch('/api/update', {method:'POST'}); alert('Updating...'); } }
 
-        showTab('queue'); setInterval(fetchSysInfo, 3000);
+        function initLogs() {
+            const eventSource = new EventSource('/api/logs');
+            const logContainer = document.getElementById('tab-logs');
+            eventSource.onmessage = (event) => {
+                const div = document.createElement('div');
+                div.className = 'border-b border-slate-800 pb-1';
+                div.innerText = `[${new Date().toLocaleTimeString()}] ${event.data}`;
+                logContainer.appendChild(div);
+                logContainer.scrollTop = logContainer.scrollHeight;
+                if(logContainer.children.length > 500) logContainer.removeChild(logContainer.firstChild);
+            };
+        }
+
+        showTab('queue'); setInterval(fetchSysInfo, 3000); initLogs();
     </script>
 </body>
 </html>
@@ -495,6 +513,16 @@ async fn get_disks() -> Json<Vec<DiskInfo>> {
     let mut disks = Disks::new();
     disks.refresh_list();
     Json(disks.iter().map(|d| DiskInfo { name: d.mount_point().to_string_lossy().to_string(), available: d.available_space() / 1_073_741_824, total: d.total_space() / 1_073_741_824 }).collect())
+}
+
+async fn stream_logs(State(state): State<AppState>) -> impl IntoResponse {
+    let mut rx = state.log_tx.subscribe();
+    let stream = async_stream::stream! {
+        while let Ok(msg) = rx.recv().await {
+            yield Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(msg));
+        }
+    };
+    axum::response::sse::Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default())
 }
 
 async fn get_profiles(State(state): State<AppState>) -> Json<Vec<QualityProfile>> {
