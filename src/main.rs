@@ -444,7 +444,13 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
         }
     });
 
-    let _ = scan_ingest_folder(pool.clone(), tmdb_client.clone(), ollama.clone(), qbit.clone()).await;
+    let initial_pool = pool.clone();
+    let initial_tmdb = tmdb_client.clone();
+    let initial_ollama = ollama.clone();
+    let initial_qbit = qbit.clone();
+    tokio::spawn(async move {
+        let _ = scan_ingest_folder(initial_pool, initial_tmdb, initial_ollama, initial_qbit).await;
+    });
 
     let scheduler_pool = pool.clone();
     let scheduler_tmdb = tmdb_client.clone();
