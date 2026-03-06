@@ -85,15 +85,65 @@ pub async fn scan_library(pool: sqlx::SqlitePool) -> Result<()> {
 }
 
 async fn update_app() -> Result<()> {
-    info!("Updating NeurArr...");
-    std::process::Command::new("git").arg("pull").status()?;
-    std::process::Command::new("cargo").args(["build", "--release"]).status()?;
+    info!("Starting NeurArr update process...");
+
+    // 1. Git Pull
+    info!("Pulling latest changes from GitHub...");
+    let status = std::process::Command::new("git")
+        .arg("pull")
+        .status()
+        .context("Failed to execute git pull.")?;
+
+    if !status.success() {
+        anyhow::bail!("Git pull failed.");
+    }
+
+    // 2. Handle Windows Binary Lock
+    #[cfg(windows)]
+    {
+        let exe_path = std::env::current_exe()?;
+        let old_exe = exe_path.with_extension("old");
+        if old_exe.exists() {
+            let _ = std::fs::remove_file(&old_exe);
+        }
+        info!("Renaming current executable to bypass Windows file lock...");
+        std::fs::rename(&exe_path, &old_exe).context("Failed to rename running executable.")?;
+    }
+
+    // 3. Cargo Build
+    info!("Building the latest version...");
+    let status = std::process::Command::new("cargo")
+        .args(["build", "--release"])
+        .status()
+        .context("Failed to execute cargo build.")?;
+
+    if !status.success() {
+        // Rollback on Windows if build fails
+        #[cfg(windows)]
+        {
+            let exe_path = std::env::current_exe()?;
+            let old_exe = exe_path.with_extension("old");
+            let _ = std::fs::rename(&old_exe, &exe_path);
+        }
+        anyhow::bail!("Build failed. Please check the logs.");
+    }
+
+    info!("Update successful!");
+
+    // 4. Restart
     #[cfg(unix)]
     {
+        info!("Restarting NeurArr...");
         use std::os::unix::process::CommandExt;
         let mut args = std::env::args();
         let cmd = args.next().unwrap();
         let _ = std::process::Command::new(cmd).args(args).exec();
+    }
+
+    #[cfg(windows)]
+    {
+        info!("New version built! Please close this window and restart NeurArr to apply changes.");
+        std::process::exit(0);
     }
     Ok(())
 }
