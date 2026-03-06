@@ -317,10 +317,18 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                             info!("Filtered out '{}' (missing must_contain: {})", r.title, must);
                                             return false; 
                                         } }
-                                        if let Some(not) = &p.must_not_contain { for w in not.split(',') { if !w.is_empty() && t.contains(w.trim()) { 
-                                            info!("Filtered out '{}' (contains must_not_contain: {})", r.title, w);
-                                            return false; 
-                                        } } }
+                                        if let Some(not) = &p.must_not_contain { 
+                                            for w in not.split(',') { 
+                                                let tag = w.trim();
+                                                if tag.is_empty() { continue; }
+                                                // Check for word boundaries or brackets to avoid partial matches like 'ts' in 'tsundere'
+                                                let patterns = [format!(" {} ", tag), format!("[{}]", tag), format!("-{}-", tag), format!(" {}-", tag), format!("-{} ", tag)];
+                                                if patterns.iter().any(|p| t.contains(p)) || (tag == "ts" && (t.contains(" ts ") || t.contains(".ts "))) {
+                                                    info!("Filtered out '{}' (contains must_not_contain: {})", r.title, tag);
+                                                    return false; 
+                                                }
+                                            } 
+                                        }
                                         if p.max_resolution == "1080p" && t.contains("2160p") { 
                                             info!("Filtered out '{}' (resolution too high)", r.title);
                                             return false; 
@@ -330,24 +338,35 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                 }).collect();
                                 for best in filtered {
                                     info!("Verifying match for torrent: '{}' with target title: '{}'", best.title, show.title);
-                                    match scheduler_ollama.verify_torrent_match(&show.title, &best.title).await {
-                                        Ok(true) => {
-                                            info!("LLM verified match for: {}", best.title);
-                                            let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
-                                            if qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
-                                                send_notification("NeurArr", &format!("Downloading: {}", best.title));
-                                                let _ = db::update_episode_status(&scheduler_pool, ep.id, "downloading").await;
-                                                found = true; break;
-                                            } else {
-                                                error!("Failed to add torrent to qbit: {}", best.title);
+                                    
+                                    // Simple string pre-verification to save LLM time
+                                    let is_string_match = best.title.to_lowercase().contains(&show.title.to_lowercase());
+                                    
+                                    let verified = if is_string_match {
+                                        info!("String match confirmed for: {}", best.title);
+                                        true
+                                    } else {
+                                        match scheduler_ollama.verify_torrent_match(&show.title, &best.title).await {
+                                            Ok(v) => v,
+                                            Err(e) => {
+                                                error!("LLM verification error: {}", e);
+                                                false
                                             }
-                                        },
-                                        Ok(false) => {
-                                            info!("LLM rejected match for: {}", best.title);
-                                        },
-                                        Err(e) => {
-                                            error!("LLM verification error: {}", e);
                                         }
+                                    };
+
+                                    if verified {
+                                        info!("Verified match for: {}", best.title);
+                                        let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
+                                        if qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
+                                            send_notification("NeurArr", &format!("Downloading: {}", best.title));
+                                            let _ = db::update_episode_status(&scheduler_pool, ep.id, "downloading").await;
+                                            found = true; break;
+                                        } else {
+                                            error!("Failed to add torrent to qbit: {}", best.title);
+                                        }
+                                    } else {
+                                        info!("Rejected match for: {}", best.title);
                                     }
                                 }
                             },
