@@ -65,7 +65,7 @@ impl IndexerClient {
         // Force JSON response from Jackett by adding t=search and format=json
         // We use the base Jackett API URL structure
         let url = format!("{}?apikey={}&Query={}&t=search&format=json", self.base_url, self.api_key, urlencoding::encode(query));
-        info!("Requesting: {}", url);
+        info!("Requesting indexer search for: {}", query);
         
         let response = self.client.get(&url).send().await?;
         

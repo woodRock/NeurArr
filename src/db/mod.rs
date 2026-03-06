@@ -159,7 +159,7 @@ pub async fn get_wanted_episodes(pool: &SqlitePool) -> Result<Vec<(Episode, Trac
 }
 
 pub async fn get_needed_seasons(pool: &SqlitePool) -> Result<Vec<(i64, TrackedShow)>> {
-    let rows = sqlx::query("SELECT e.season, s.id as sid, s.title as stitle, s.tmdb_id, s.media_type, s.status as sstatus, s.poster_path, s.release_date, s.year, s.genres, s.rating, s.last_updated, s.total_seasons FROM episodes e JOIN tracked_shows s ON e.show_id = s.id WHERE e.status = 'wanted' AND s.media_type = 'tv' GROUP BY s.id, e.season HAVING COUNT(CASE WHEN e.status = 'wanted' THEN 1 END) > 5").fetch_all(pool).await?;
+    let rows = sqlx::query("SELECT e.season, s.id as sid, s.title as stitle, s.tmdb_id, s.media_type, s.status as sstatus, s.poster_path, s.release_date, s.year, s.genres, s.rating, s.last_updated, s.total_seasons FROM episodes e JOIN tracked_shows s ON e.show_id = s.id WHERE e.status = 'wanted' AND s.media_type = 'tv' GROUP BY s.id, e.season HAVING COUNT(CASE WHEN e.status = 'wanted' THEN 1 END) >= 2").fetch_all(pool).await?;
     let mut results = Vec::new();
     for r in rows {
         use sqlx::Row;
@@ -221,4 +221,8 @@ pub async fn update_season_status(pool: &SqlitePool, show_id: i64, season: i64, 
 pub async fn update_media_item_full(pool: &SqlitePool, id: i64, tmdb_id: u32, title: &str, summary: String, season: Option<i32>, episode: Option<i32>) -> Result<()> {
     sqlx::query("UPDATE media_items SET tmdb_id = ?, title = ?, spoiler_free_summary = ?, season = ?, episode = ?, status = 'processed' WHERE id = ?").bind(tmdb_id as i64).bind(title).bind(summary).bind(season.map(|s| s as i64)).bind(episode.map(|e| e as i64)).bind(id).execute(pool).await?;
     Ok(())
+}
+
+pub async fn get_wanted_movies(pool: &SqlitePool) -> Result<Vec<TrackedShow>> {
+    Ok(sqlx::query_as::<_, TrackedShow>("SELECT * FROM tracked_shows WHERE media_type = 'movie' AND status = 'wanted' ORDER BY last_updated DESC").fetch_all(pool).await?)
 }

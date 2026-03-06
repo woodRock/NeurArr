@@ -20,7 +20,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore, broadcast};
-use tracing::info;
+use tracing::{info, error};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use walkdir::WalkDir;
 
@@ -99,7 +99,8 @@ fn load_icon() -> Option<tray_icon::Icon> {
     tray_icon::Icon::from_rgba(rgba, width, height).ok()
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
     let (log_tx, _) = broadcast::channel(100);
@@ -116,30 +117,22 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Setup) => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async {
-                info!("NeurArr Setup Mode");
-                let pool = init_db().await?;
-                if db::get_user_hash(&pool, "admin").await?.is_none() {
-                    info!("Creating default admin user (password: admin)");
-                    let hash = crate::utils::auth::hash_password("admin");
-                    db::create_user(&pool, "admin", &hash).await?;
-                }
-                Ok::<(), anyhow::Error>(())
-            })?;
+            info!("NeurArr Setup Mode");
+            let pool = init_db().await?;
+            if db::get_user_hash(&pool, "admin").await?.is_none() {
+                info!("Creating default admin user (password: admin)");
+                let hash = crate::utils::auth::hash_password("admin");
+                db::create_user(&pool, "admin", &hash).await?;
+            }
             return Ok(());
         }
         Some(Commands::Update) => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async { update_app().await })?;
+            update_app().await?;
             return Ok(());
         }
         Some(Commands::Scan) => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async {
-                let pool = init_db().await?;
-                scan_library(pool).await
-            })?;
+            let pool = init_db().await?;
+            scan_library(pool).await?;
             return Ok(());
         }
         _ => {
@@ -176,11 +169,12 @@ fn main() -> Result<()> {
             let menu_channel = MenuEvent::receiver();
             let tray_channel = TrayIconEvent::receiver();
 
+            let log_tx_inner = log_tx.clone();
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async {
-                    if let Err(e) = run_daemon(log_tx).await {
-                        tracing::error!("Daemon error: {:?}", e);
+                    if let Err(e) = run_daemon(log_tx_inner).await {
+                        error!("Daemon error: {:?}", e);
                     }
                 });
             });
@@ -217,6 +211,8 @@ fn main() -> Result<()> {
             });
         }
     }
+
+    Ok(())
 }
 
 pub async fn scan_library(pool: sqlx::SqlitePool) -> Result<()> {
@@ -290,38 +286,52 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
     let indexer = crate::integrations::indexer::IndexerClient::new().unwrap();
     let profile = db::get_default_quality_profile(&pool).await.ok();
 
+    info!("Automation: Starting cycle...");
+
+    // 1. Sync metadata for all TV shows
     if let Ok(tracked) = db::get_tracked_shows(&pool).await {
-        for show in tracked { let _ = sync_show_episodes(&pool, &tmdb, show.id).await; }
+        for show in tracked { 
+            if show.media_type == "tv" {
+                let _ = sync_show_episodes(&pool, &tmdb, show.id).await; 
+            }
+        }
     }
 
+    // 2. Check for Season Packs
     if let Ok(needed_seasons) = db::get_needed_seasons(&pool).await {
         for (season_num, show) in needed_seasons {
             let s_code = format!("S{:02}", season_num);
             let mut queries = Vec::new();
-            let year_suffix = show.year.map(|y| format!(" {}", y)).unwrap_or_default();
-            queries.push(format!("{} {}{}", show.title, s_code, year_suffix));
-            if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, true).await {
-                for alt in alts { queries.push(format!("{} {}{}", alt, s_code, year_suffix)); }
+            let year_str = show.year.map(|y| y.to_string()).unwrap_or_default();
+            
+            queries.push(format!("{} {}", show.title, s_code));
+            if !year_str.is_empty() {
+                queries.push(format!("{} {} {}", show.title, year_str, s_code));
             }
+
+            if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, true).await {
+                for alt in alts { queries.push(format!("{} {}", alt, s_code)); }
+            }
+            
             let mut found = false;
             for q in queries {
                 if found { break; }
+                info!("Automation: Searching for pack: {}", q);
                 if let Ok(res) = indexer.search(&q).await {
                     let filtered: Vec<_> = res.into_iter().filter(|r| {
                         let t = r.title.to_lowercase();
                         if let Some(y) = show.year {
-                            let year_str = y.to_string();
-                            let re = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap();
-                            for caps in re.find_iter(&r.title) {
-                                if caps.as_str() != year_str {
-                                    if t.contains(&format!("({})", caps.as_str())) || t.contains(&format!("[{}]", caps.as_str())) || t.ends_with(caps.as_str()) { return false; }
-                                }
-                            }
+                            let y_s = y.to_string();
+                            let other_year = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap().find_iter(&r.title)
+                                .any(|m| m.as_str() != y_s);
+                            if other_year && !t.contains(&y_s) { return false; }
                         }
                         t.contains(&s_code.to_lowercase()) && (t.contains("complete") || t.contains("season") || !t.contains("e0"))
                     }).collect();
+
                     for best in filtered {
                         if let Ok(true) = ollama.verify_torrent_match(&show.title, &best.title).await {
+                            info!("Automation: Found confirmed pack: {}", best.title);
                             let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
                             if qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
                                 let _ = db::update_season_status(&pool, show.id, season_num, "downloading").await;
@@ -335,32 +345,35 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
         }
     }
 
+    // 3. Check for Individual Episodes
     if let Ok(wanted_eps) = db::get_wanted_episodes(&pool).await {
         for (ep, show) in wanted_eps {
             let ep_code = format!("S{:02}E{:02}", ep.season, ep.episode);
             let mut queries = Vec::new();
-            let year_suffix = show.year.map(|y| format!(" {}", y)).unwrap_or_default();
-            queries.push(format!("{} {}{}", show.title, ep_code, year_suffix));
+            let year_str = show.year.map(|y| y.to_string()).unwrap_or_default();
+
+            queries.push(format!("{} {}", show.title, ep_code));
+            if !year_str.is_empty() {
+                queries.push(format!("{} {} {}", show.title, year_str, ep_code));
+            }
+
             if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, true).await {
-                for alt in alts { queries.push(format!("{} {}{}", alt, ep_code, year_suffix)); }
+                for alt in alts { queries.push(format!("{} {}", alt, ep_code)); }
             }
             let mut found = false;
             for q in queries {
                 if found { break; }
+                info!("Automation: Searching for episode: {}", q);
                 if let Ok(res) = indexer.search(&q).await {
                     let filtered: Vec<_> = res.into_iter().filter(|r| {
+                        let t = r.title.to_lowercase();
                         if let Some(y) = show.year {
-                            let year_str = y.to_string();
-                            let re = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap();
-                            for caps in re.find_iter(&r.title) {
-                                if caps.as_str() != year_str {
-                                    let t_l = r.title.to_lowercase();
-                                    if t_l.contains(&format!("({})", caps.as_str())) || t_l.contains(&format!("[{}]", caps.as_str())) || t_l.ends_with(caps.as_str()) { return false; }
-                                }
-                            }
+                            let y_s = y.to_string();
+                            let other_year = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap().find_iter(&r.title)
+                                .any(|m| m.as_str() != y_s);
+                            if other_year && !t.contains(&y_s) { return false; }
                         }
                         if let Some(p) = &profile {
-                            let t = r.title.to_lowercase();
                             if let Some(must) = &p.must_contain { if !must.is_empty() && !t.contains(must) { return false; } }
                             if let Some(not) = &p.must_not_contain { for w in not.split(',') { if !w.trim().is_empty() && t.contains(w.trim().to_lowercase().as_str()) { return false; } } }
                             if p.max_resolution == "1080p" && t.contains("2160p") { return false; }
@@ -369,6 +382,7 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
                     }).collect();
                     for best in filtered {
                         if let Ok(true) = ollama.verify_torrent_match(&show.title, &best.title).await {
+                            info!("Automation: Found confirmed episode: {}", best.title);
                             let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
                             if qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
                                 let _ = db::update_episode_status(&pool, ep.id, "downloading").await;
@@ -381,6 +395,60 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
             }
         }
     }
+
+    // 4. Check for Wanted Movies
+    if let Ok(wanted_movies) = db::get_wanted_movies(&pool).await {
+        for movie in wanted_movies {
+            let mut queries = Vec::new();
+            let year_str = movie.year.map(|y| y.to_string()).unwrap_or_default();
+            
+            queries.push(movie.title.clone());
+            if !year_str.is_empty() {
+                queries.push(format!("{} {}", movie.title, year_str));
+            }
+
+            if let Ok(alts) = tmdb.get_alternative_titles(movie.tmdb_id as u32, false).await {
+                for alt in alts { queries.push(alt); }
+            }
+
+            let mut found = false;
+            for q in queries {
+                if found { break; }
+                info!("Automation: Searching for movie: {}", q);
+                if let Ok(res) = indexer.search(&q).await {
+                    let filtered: Vec<_> = res.into_iter().filter(|r| {
+                        let t = r.title.to_lowercase();
+                        if let Some(y) = movie.year {
+                            let y_s = y.to_string();
+                            let other_year = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap().find_iter(&r.title)
+                                .any(|m| m.as_str() != y_s);
+                            if other_year && !t.contains(&y_s) { return false; }
+                        }
+                        if let Some(p) = &profile {
+                            if let Some(must) = &p.must_contain { if !must.is_empty() && !t.contains(must) { return false; } }
+                            if let Some(not) = &p.must_not_contain { for w in not.split(',') { if !w.trim().is_empty() && t.contains(w.trim().to_lowercase().as_str()) { return false; } } }
+                            if p.max_resolution == "1080p" && t.contains("2160p") { return false; }
+                        }
+                        !t.contains("soundtrack") && !t.contains("ost")
+                    }).collect();
+
+                    for best in filtered {
+                        if let Ok(true) = ollama.verify_torrent_match(&movie.title, &best.title).await {
+                            info!("Automation: Found confirmed movie: {}", best.title);
+                            let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
+                            if qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
+                                let _ = db::update_tracked_show_status(&pool, movie.id, "downloading").await;
+                                let _ = db::insert_pending_download(&pool, &best.title, Some(movie.id), None, movie.tmdb_id as u32, "movie", None).await;
+                                found = true; break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    info!("Automation: Cycle complete.");
     Ok(())
 }
 
