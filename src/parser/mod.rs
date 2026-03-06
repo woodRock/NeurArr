@@ -29,15 +29,14 @@ impl Parser {
     }
 
     pub fn parse_regex(filename: &str) -> MediaMetadata {
-        let mut title = filename.to_string();
         let mut resolution = None;
         let mut season = None;
         let mut episode = None;
 
         // 1. Extract resolution
-        let res_re = Regex::new(r"(2160p|1080p|720p|480p)").unwrap();
+        let res_re = Regex::new(r"(?i)(2160p|1080p|720p|480p)").unwrap();
         if let Some(caps) = res_re.captures(filename) {
-            resolution = Some(caps[1].to_string());
+            resolution = Some(caps[1].to_lowercase());
         }
 
         // 2. Extract S01E01 style
@@ -47,19 +46,42 @@ impl Parser {
             episode = caps[2].parse().ok();
         }
 
-        // 3. Clean title (take everything before the year or resolution)
-        let clean_re = Regex::new(r"(?i)(^.*?)[\s\.](19|20)\d{2}|(2160p|1080p|720p|480p)|S\d+E\d+").unwrap();
-        if let Some(caps) = clean_re.captures(filename) {
-            if let Some(mat) = caps.get(1) {
-                title = mat.as_str().replace('.', " ").trim().to_string();
+        // 3. Clean title: find the split point
+        let mut split_point = filename.len();
+        
+        // Find all tags: years, resolutions, or TV tags
+        let all_tags_re = Regex::new(r"(?i)[\s\.]((19|20)\d{2}|2160p|1080p|720p|480p|S\d+E\d+)").unwrap();
+        let all_matches: Vec<_> = all_tags_re.find_iter(filename).collect();
+        
+        if !all_matches.is_empty() {
+            // Logic: A year is only a "split point" if it's the LAST year in the filename.
+            // Other tags (resolution, TV) are always split points.
+            
+            for mat in &all_matches {
+                let tag_text = mat.as_str().to_lowercase();
+                let is_year = Regex::new(r"(19|20)\d{2}").unwrap().is_match(&tag_text);
+                
+                if is_year {
+                    // Check if there's another year after this one
+                    let remaining_text = &filename[mat.end()..];
+                    let has_later_year = Regex::new(r"(19|20)\d{2}").unwrap().is_match(remaining_text);
+                    
+                    if !has_later_year {
+                        split_point = mat.start();
+                        break;
+                    }
+                } else {
+                    // Not a year (resolution or TV tag), split here immediately
+                    split_point = mat.start();
+                    break;
+                }
             }
         } else {
-            // Fallback: just remove dots and extension
-            title = title.replace('.', " ");
-            if let Some(idx) = title.rfind(' ') {
-                title.truncate(idx);
-            }
+            // Fallback: split at extension
+            split_point = filename.rfind('.').unwrap_or(filename.len());
         }
+
+        let title = filename[..split_point].replace('.', " ").trim().to_string();
 
         MediaMetadata {
             title,
