@@ -470,8 +470,46 @@ async fn dashboard() -> impl IntoResponse {
         async function markWatched(id) { await fetch(`/api/tracked/${id}/watched`, { method: 'POST' }); fetchTracked(); }
         async function markWanted(id) { await fetch(`/api/tracked/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'wanted' }) }); fetchTracked(); }
         async function rateItem(id, rating) { await fetch(`/api/tracked/${id}/rating`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rating }) }); fetchTracked(); }
-        async function track(id, title, poster, date, type, status = 'wanted') { await fetch('/api/track', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: parseInt(id), title, poster_path: poster, release_date: date, media_type: type, status }) }); alert('Tracked: ' + title); if(status==='wanted') showTab('activity'); else fetchTracked(); }
-        async function fetchConfig() { const res = await fetch('/api/settings/config'); const config = await res.json(); document.getElementById('config-form').innerHTML = Object.entries(config).map(([key, val]) => `<div class="flex flex-col gap-2"><label class="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em] ml-2">${key.replace(/_/g, ' ')}</label><input type="${key.includes('PASS') || key.includes('KEY') ? 'password' : 'text'}" id="cfg-${key}" value="${val}" class="bg-white/5 border border-white/10 rounded-2xl px-5 py-4 outline-none focus:border-sky-500 text-xs font-mono text-slate-300 shadow-inner"></div>`).join(''); }
+        async function track(id, title, poster, date, type, status = 'wanted') {
+            const cleanId = parseInt(id);
+            if (isNaN(cleanId)) { alert('Invalid Neural ID'); return; }
+            const res = await fetch('/api/track', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: cleanId,
+                    title,
+                    poster_path: (poster === 'null' || poster === 'undefined' || !poster) ? null : poster,
+                    release_date: (date === 'null' || date === 'undefined' || !date) ? null : date,
+                    media_type: type,
+                    status
+                })
+            });
+            if (res.ok) {
+                alert('Tracked: ' + title);
+                if(status==='wanted') showTab('activity'); else fetchTracked();
+            } else {
+                alert('Neural uplink failed: ' + res.status);
+            }
+        }
+        async function fetchConfig() {
+            const res = await fetch('/api/settings/config');
+            const config = await res.json();
+            const groups = {};
+            config.forEach(item => {
+                if (!groups[item.group]) groups[item.group] = [];
+                groups[item.group].push(item);
+            });
+            document.getElementById('config-form').innerHTML = Object.entries(groups).map(([group, items]) => `
+                <div class="col-span-full mt-6 mb-2"><h3 class="text-sky-500 font-black text-xs uppercase tracking-[0.2em] ml-2">${group}</h3></div>
+                ${items.map(item => `
+                    <div class="flex flex-col gap-2">
+                        <label class="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em] ml-2">${item.label}</label>
+                        <input type="${item.key.includes('PASS') || item.key.includes('KEY') ? 'password' : 'text'}" id="cfg-${item.key}" value="${item.value}" class="bg-white/5 border border-white/10 rounded-2xl px-5 py-4 outline-none focus:border-sky-500 text-xs font-mono text-slate-300 shadow-inner">
+                    </div>
+                `).join('')}
+            `).join('');
+        }
         async function saveConfig() { const inputs = document.querySelectorAll('[id^="cfg-"]'); const config = {}; inputs.forEach(input => { const key = input.id.replace('cfg-', ''); config[key] = input.value; }); const res = await fetch('/api/settings/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) }); if(await res.json()) alert('System Core Updated'); }
         async function fetchDisks() { const res = await fetch('/api/disks'); const data = await res.json(); document.getElementById('disk-info').innerHTML = data.map(d => `<div class="glass p-6 rounded-[2rem] border border-white/5 shadow-xl"><div class="flex justify-between text-[10px] font-black uppercase text-slate-400 mb-3 tracking-widest"><span>${d.name}</span><span class="text-sky-500">${(d.available/1024/1024/1024).toFixed(1)}GB AVAILABLE</span></div><div class="w-full h-1.5 bg-white/5 rounded-full overflow-hidden shadow-inner"><div class="h-full bg-sky-500 shadow-[0_0_10px_rgba(56,189,248,0.3)]" style="width:${(1 - d.available/d.total)*100}%"></div></div></div>`).join(''); }
         async function fetchSysInfo() { const res = await fetch('/api/sysinfo'); const data = await res.json(); document.getElementById('sys-cpu').innerText = `CPU: ${data.cpu_usage.toFixed(1)}%`; document.getElementById('sys-ram').innerText = `RAM: ${data.memory_used}MB`; }
@@ -752,10 +790,37 @@ async fn trigger_ingest(State(state): State<AppState>) -> Json<bool> {
     Json(false)
 }
 
-async fn get_config() -> Json<std::collections::HashMap<String, String>> {
-    let keys = vec![ "TMDB_API_KEY", "OPENSUBTITLES_API_KEY", "INDEXER_URL", "INDEXER_API_KEY", "QBITTORRENT_URL", "QBITTORRENT_USER", "QBITTORRENT_PASS", "OLLAMA_BASE_URL", "OLLAMA_MODEL", "NEURARR_INGEST_DIR", "NEURARR_LIBRARY_DIR" ];
-    let mut config = std::collections::HashMap::new();
-    for key in keys { config.insert(key.to_string(), std::env::var(key).unwrap_or_default()); }
+#[derive(Serialize)]
+struct ConfigItem {
+    key: String,
+    value: String,
+    label: String,
+    group: String,
+}
+
+async fn get_config() -> Json<Vec<ConfigItem>> {
+    let keys = vec![
+        ("TMDB_API_KEY", "TMDB API Key", "External Services"),
+        ("OPENSUBTITLES_API_KEY", "OpenSubtitles API Key", "External Services"),
+        ("QBITTORRENT_URL", "qBittorrent URL", "Automation"),
+        ("QBITTORRENT_USER", "qBittorrent User", "Automation"),
+        ("QBITTORRENT_PASS", "qBittorrent Password", "Automation"),
+        ("INDEXER_URL", "Indexer URL", "Automation"),
+        ("INDEXER_API_KEY", "Indexer API Key", "Automation"),
+        ("OLLAMA_BASE_URL", "Ollama Base URL", "AI Discovery"),
+        ("OLLAMA_MODEL", "Ollama Model", "AI Discovery"),
+        ("NEURARR_INGEST_DIR", "Ingest Directory", "Storage"),
+        ("NEURARR_LIBRARY_DIR", "Library Directory", "Storage"),
+    ];
+    let mut config = Vec::new();
+    for (key, label, group) in keys {
+        config.push(ConfigItem {
+            key: key.to_string(),
+            value: std::env::var(key).unwrap_or_default(),
+            label: label.to_string(),
+            group: group.to_string(),
+        });
+    }
     Json(config)
 }
 
