@@ -1,0 +1,23 @@
+# Rust
+/target
+
+# Environment variables
+.env
+
+# Database
+neurarr.db
+neurarr.db-shm
+neurarr.db-wal
+
+# Media Directories (Keep folders but ignore content)
+ingest/*
+!ingest/.gitkeep
+library/*
+!library/.gitkeep
+
+# AI Models
+models/
+
+# OS specific
+.DS_Store
+Thumbs.db
