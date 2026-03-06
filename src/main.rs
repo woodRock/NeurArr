@@ -308,6 +308,7 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                         for alt in alts { queries.push(format!("{} {}", alt, ep_code)); }
                     }
                     let mut found = false;
+                    let mut seen_torrents = std::collections::HashSet::new();
                     for q in queries {
                         if found { break; }
                         match indexer.search(&q).await {
@@ -344,6 +345,9 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                                     true
                                 }).collect();
                                 for best in filtered {
+                                    if seen_torrents.contains(&best.link) { continue; }
+                                    seen_torrents.insert(best.link.clone());
+
                                     info!("Verifying match for torrent: '{}' with target title: '{}'", best.title, show.title);
                                     
                                     // Simple string pre-verification to save LLM time
