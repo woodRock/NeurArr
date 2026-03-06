@@ -180,6 +180,10 @@ async fn dashboard() -> impl IntoResponse {
         <button onclick="showTab('activity')" id="nav-activity" class="font-black text-[11px] tracking-[0.2em] uppercase opacity-50 hover:opacity-100 transition-all">Activity</button>
         
         <div class="ml-auto flex items-center gap-6">
+            <div class="hidden md:flex flex-col items-end gap-0.5 text-[8px] font-black uppercase tracking-widest text-slate-500">
+                <span id="sys-cpu">CPU: 0.0%</span>
+                <span id="sys-ram">RAM: 0MB</span>
+            </div>
             <button onclick="toggleBot()" class="bg-purple-600/10 text-purple-400 p-2.5 rounded-xl border border-purple-500/20 hover:bg-purple-600 hover:text-white transition-all">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zM9 9h2v2H9V9z" clip-rule="evenodd" /></svg>
             </button>
