@@ -4,7 +4,7 @@ use axum::{
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post, delete},
     middleware::{self, Next},
-    http::Request,
+    http::{Request, StatusCode},
     Json, Router,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
@@ -104,6 +104,7 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         .route("/api/update", post(trigger_update))
         .route("/api/scan-library", post(scan_library))
         .route("/api/ingest", post(trigger_ingest))
+        .route("/logo.png", get(serve_logo))
         .layer(middleware::from_fn(auth_middleware))
         .route("/login", get(login_page).post(handle_login))
         .with_state(state);
@@ -176,7 +177,8 @@ async fn dashboard() -> impl IntoResponse {
 
     <nav class="glass sticky top-0 flex gap-8 p-5 mb-10 rounded-2xl items-center z-50">
         <div class="font-black text-2xl mr-4 text-white tracking-tighter flex items-center gap-3">
-            <span class="text-sky-500">Neur</span>Arr
+            <img id="navbar-logo" src="/logo.png" class="h-8 w-auto hidden" onerror="this.classList.add('hidden'); document.getElementById('navbar-text-logo').classList.remove('hidden')">
+            <div id="navbar-text-logo"><span class="text-sky-500">Neur</span>Arr</div>
             <div id="scan-indicator" class="hidden"><div class="w-2 h-2 bg-sky-500 rounded-full animate-ping"></div></div>
         </div>
         <button onclick="showTab('recommendations')" id="nav-recommendations" class="font-black text-[11px] tracking-[0.2em] uppercase opacity-50 hover:opacity-100 transition-all">For You</button>
@@ -1135,4 +1137,17 @@ async fn fetch_subtitles_for_tracked(State(state): State<AppState>, Path(id): Pa
 async fn trigger_update() -> Json<bool> {
     tokio::spawn(async { let _ = std::process::Command::new(std::env::current_exe().unwrap()).arg("update").spawn(); });
     Json(true)
+}
+
+async fn serve_logo() -> impl IntoResponse {
+    let path = std::path::Path::new("assets/logo.png");
+    if path.exists() {
+        if let Ok(content) = tokio::fs::read(path).await {
+            return Response::builder()
+                .header("Content-Type", "image/png")
+                .body(axum::body::Body::from(content))
+                .unwrap();
+        }
+    }
+    StatusCode::NOT_FOUND.into_response()
 }

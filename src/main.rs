@@ -73,6 +73,17 @@ impl tracing::field::Visit for LogVisitor {
 }
 
 fn load_icon() -> Option<tray_icon::Icon> {
+    // 1. Try to load from assets/logo.png
+    if let Ok(img) = image::open("assets/logo.png") {
+        let rgba = img.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        let raw = rgba.into_raw();
+        if let Ok(icon) = tray_icon::Icon::from_rgba(raw, width, height) {
+            return Some(icon);
+        }
+    }
+
+    // 2. Fallback to procedural blue circle
     let mut img = image::RgbaImage::new(32, 32);
     for x in 0..32 {
         for y in 0..32 {
