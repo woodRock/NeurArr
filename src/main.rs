@@ -469,7 +469,7 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
             if let Ok(event) = res {
                 for path in event.paths {
                     let path_clone = path.clone();
-                    if path_clone.is_file() {
+                    if path_clone.exists() {
                         let mut registry = processing_registry.lock().await;
                         if registry.insert(path_clone.clone()) {
                             let pool = scanner_pool.clone();
@@ -516,12 +516,67 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
 }
 
 async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, _qbit: Arc<QBittorrentClient>) -> Result<()> {
-    if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
+    let filename = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
+    if filename.is_empty() { return Ok(()); }
+
+    // Check if it's a known pending download first (fast path)
+    if let Ok(Some(pending)) = db::get_pending_download(&pool, filename).await {
+        info!("Ingest: Identified {} from pending downloads (ID: {})", filename, pending.id);
+        
+        let details = if pending.media_type == "tv" {
+            tmdb.get_tv_details(pending.tmdb_id as u32).await?
+        } else {
+            tmdb.get_movie_details(pending.tmdb_id as u32).await?
+        };
+
+        let final_title = details.name.or(details.title).unwrap_or_else(|| "Unknown".to_string());
+        
+        // If it's a directory (pack), we need to process all files inside
+        if path.is_dir() {
+            info!("Ingest: Processing pack directory: {}", filename);
+            for entry in WalkDir::new(&path).into_iter().filter_map(|e| e.ok()) {
+                if entry.file_type().is_file() {
+                    let f = entry.path().file_name().and_then(|s| s.to_str()).unwrap_or("");
+                    if ["mkv", "mp4", "avi", "mov"].contains(&entry.path().extension().and_then(|e| e.to_str()).unwrap_or("")) {
+                        let meta = Parser::parse_regex(f);
+                        let summary = ollama.rewrite_summary(&details.overview.as_deref().unwrap_or_default()).await.unwrap_or_default();
+                        let item_id = db::insert_media_item(&pool, f, &meta).await?;
+                        db::update_media_item_full(&pool, item_id, pending.tmdb_id as u32, &final_title, summary, meta.season.map(|s| s as i32), meta.episode.map(|e| e as i32)).await?;
+                        
+                        if let (Some(s), Some(e)) = (meta.season, meta.episode) {
+                            if let Some(sid) = pending.show_id {
+                                let _ = db::update_episode_status_completed(&pool, sid, s as i32, e as i32).await;
+                            }
+                        } else if pending.media_type == "movie" {
+                            if let Some(sid) = pending.show_id {
+                                let _ = db::update_tracked_show_status(&pool, sid, "completed").await;
+                            }
+                        }
+
+                        let renamer = Renamer::new(env::var("NEURARR_LIBRARY_DIR")?);
+                        let _ = renamer.move_file(entry.path(), &meta, &final_title).await;
+                    }
+                }
+            }
+            // Cleanup empty directory
+            let _ = tokio::fs::remove_dir_all(&path).await;
+        } else {
+            // Single file match from pending
+            let metadata = Parser::parse_regex(filename);
+            let item_id = db::insert_media_item(&pool, filename, &metadata).await?;
+            run_pipeline(item_id, path, pool, tmdb, ollama, Some(pending.tmdb_id as u32)).await?;
+        }
+        return Ok(());
+    }
+
+    // Slow path: Standard regex + AI matching
+    if path.is_file() {
         if !["mkv", "mp4", "avi", "mov"].contains(&path.extension().and_then(|e| e.to_str()).unwrap_or("")) { return Ok(()); }
         let metadata = Parser::parse_regex(filename);
         let item_id = db::insert_media_item(&pool, filename, &metadata).await?;
         run_pipeline(item_id, path, pool, tmdb, ollama, None).await?;
     }
+    
     Ok(())
 }
 
@@ -542,6 +597,22 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
     let final_title = details.name.or(details.title).unwrap_or_else(|| "Unknown".to_string());
     let summary = ollama.rewrite_summary(&details.overview.unwrap_or_default()).await?;
     db::update_media_item_full(&pool, item_id, tmdb_id, &final_title, summary, metadata.season.map(|s| s as i32), metadata.episode.map(|e| e as i32)).await?;
+    
+    // Update episode/show status to completed
+    if let (Some(s), Some(e)) = (metadata.season, metadata.episode) {
+        if let Ok(tracked) = db::get_tracked_shows(&pool).await {
+            if let Some(show) = tracked.iter().find(|t| t.tmdb_id == tmdb_id as i64) {
+                let _ = db::update_episode_status_completed(&pool, show.id, s as i32, e as i32).await;
+            }
+        }
+    } else if metadata.season.is_none() {
+        if let Ok(tracked) = db::get_tracked_shows(&pool).await {
+            if let Some(show) = tracked.iter().find(|t| t.tmdb_id == tmdb_id as i64) {
+                let _ = db::update_tracked_show_status(&pool, show.id, "completed").await;
+            }
+        }
+    }
+
     let renamer = Renamer::new(env::var("NEURARR_LIBRARY_DIR")?);
     renamer.move_file(&path, &metadata, &final_title).await?;
     Ok(())

@@ -223,6 +223,27 @@ pub async fn update_media_item_full(pool: &SqlitePool, id: i64, tmdb_id: u32, ti
     Ok(())
 }
 
+#[derive(Serialize, Deserialize, sqlx::FromRow, Clone, Debug)]
+pub struct PendingDownload {
+    pub id: i64,
+    pub torrent_name: String,
+    pub show_id: Option<i64>,
+    pub episode_id: Option<i64>,
+    pub tmdb_id: i64,
+    pub media_type: String,
+    pub season: Option<i64>,
+    pub created_at: String,
+}
+
+pub async fn get_pending_download(pool: &SqlitePool, torrent_name: &str) -> Result<Option<PendingDownload>> {
+    Ok(sqlx::query_as::<_, PendingDownload>("SELECT * FROM pending_downloads WHERE ? LIKE '%' || torrent_name || '%' OR torrent_name LIKE '%' || ? || '%'").bind(torrent_name).bind(torrent_name).fetch_optional(pool).await?)
+}
+
 pub async fn get_wanted_movies(pool: &SqlitePool) -> Result<Vec<TrackedShow>> {
     Ok(sqlx::query_as::<_, TrackedShow>("SELECT * FROM tracked_shows WHERE media_type = 'movie' AND status = 'wanted' ORDER BY last_updated DESC").fetch_all(pool).await?)
+}
+
+pub async fn update_episode_status_completed(pool: &SqlitePool, show_id: i64, season: i32, episode: i32) -> Result<()> {
+    sqlx::query("UPDATE episodes SET status = 'completed' WHERE show_id = ? AND season = ? AND episode = ?").bind(show_id).bind(season as i64).bind(episode as i64).execute(pool).await?;
+    Ok(())
 }
