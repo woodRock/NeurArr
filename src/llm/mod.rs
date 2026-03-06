@@ -89,4 +89,11 @@ impl OllamaClient {
         let user = format!("Rewrite: {}", summary);
         self.chat(system, &user).await
     }
+
+    pub async fn verify_torrent_match(&self, target_title: &str, torrent_title: &str) -> Result<bool> {
+        let system = "You are a torrent verification expert. Compare the target title with the torrent title. If the torrent title is a match for the target (allowing for year, resolution, and minor scene naming variations), return the word 'true'. If it is a different show or movie entirely, return 'false'. Do not explain.";
+        let user = format!("Target: {}\nTorrent: {}\nMatch:", target_title, torrent_title);
+        let response = self.chat(system, &user, false).await?;
+        Ok(response.to_lowercase().contains("true"))
+    }
 }

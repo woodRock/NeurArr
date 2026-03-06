@@ -95,6 +95,15 @@ impl TmdbClient {
         Ok(response.results)
     }
 
+    pub async fn get_tv_details(&self, id: u32) -> Result<TmdbMediaFull> {
+        let url = format!(
+            "https://api.themoviedb.org/3/tv/{}?api_key={}",
+            id, self.api_key
+        );
+        let response = self.client.get(&url).send().await?.json::<TmdbMediaFull>().await?;
+        Ok(response)
+    }
+
     pub async fn get_tv_season(&self, id: u32, season: u32) -> Result<Vec<TmdbEpisode>> {
         let url = format!(
             "https://api.themoviedb.org/3/tv/{}/season/{}?api_key={}",
@@ -127,6 +136,15 @@ impl TmdbClient {
         }
         Ok(titles)
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TmdbMediaFull {
+    pub id: u32,
+    pub name: Option<String>,
+    pub title: Option<String>,
+    pub overview: Option<String>,
+    pub number_of_seasons: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

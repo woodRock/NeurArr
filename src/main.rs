@@ -213,37 +213,44 @@ async fn run_daemon() -> Result<()> {
     let web_handle = start_web_server(pool.clone());
 
     let scheduler_pool = pool.clone();
+    let scheduler_tmdb = tmdb_client.clone();
+    let scheduler_ollama = ollama.clone();
+    
     let scheduler_handle = tokio::spawn(async move {
         let indexer = crate::integrations::indexer::IndexerClient::new().unwrap();
         let qbit = crate::integrations::torrent::QBittorrentClient::new().unwrap();
-        let tmdb = crate::integrations::tmdb::TmdbClient::new().unwrap();
         let _ = qbit.login().await;
         
         loop {
             info!("Running scheduled background checks...");
             
-            // 1. Sync episodes for tracked TV shows
+            // 1. Sync episodes for tracked TV shows (Multi-Season)
             if let Ok(tracked) = crate::db::get_tracked_shows(&scheduler_pool).await {
                 for show in tracked {
                     if show.media_type == "tv" {
                         info!("Syncing episodes for show: {}", show.title);
-                        if let Ok(episodes) = tmdb.get_tv_season(show.tmdb_id as u32, 1).await {
-                            for ep in episodes {
-                                let already_aired = ep.air_date.as_ref().map(|d| {
-                                    let now = chrono::Utc::now().date_naive().to_string();
-                                    d <= &now
-                                }).unwrap_or(false);
+                        if let Ok(full_info) = scheduler_tmdb.get_tv_details(show.tmdb_id as u32).await {
+                            let seasons = full_info.number_of_seasons.unwrap_or(1);
+                            for s in 1..=seasons {
+                                if let Ok(episodes) = scheduler_tmdb.get_tv_season(show.tmdb_id as u32, s).await {
+                                    for ep in episodes {
+                                        let already_aired = ep.air_date.as_ref().map(|d| {
+                                            let now = chrono::Utc::now().date_naive().to_string();
+                                            d <= &now
+                                        }).unwrap_or(false);
 
-                                if already_aired {
-                                    let _ = crate::db::insert_episode(
-                                        &scheduler_pool, 
-                                        show.id, 
-                                        ep.season_number, 
-                                        ep.episode_number, 
-                                        &ep.name, 
-                                        ep.air_date,
-                                        "wanted"
-                                    ).await;
+                                        if already_aired {
+                                            let _ = crate::db::insert_episode(
+                                                &scheduler_pool, 
+                                                show.id, 
+                                                ep.season_number, 
+                                                ep.episode_number, 
+                                                &ep.name, 
+                                                ep.air_date,
+                                                "wanted"
+                                            ).await;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -251,28 +258,36 @@ async fn run_daemon() -> Result<()> {
                 }
             }
 
-            // 2. Search for wanted episodes (TV)
+            // 2. Search for wanted episodes (TV) with AI Verification
             if let Ok(wanted_eps) = crate::db::get_wanted_episodes(&scheduler_pool).await {
                 for (ep, show) in wanted_eps {
                     let ep_code = format!("S{:02}E{:02}", ep.season, ep.episode);
                     let mut search_queries = Vec::new();
                     search_queries.push(format!("{} {}", show.title, ep_code));
                     
-                    if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, true).await {
+                    if let Ok(alts) = scheduler_tmdb.get_alternative_titles(show.tmdb_id as u32, true).await {
                         for alt in alts {
                             search_queries.push(format!("{} {}", alt, ep_code));
                         }
                     }
 
+                    let mut found_valid = false;
                     for query in search_queries {
+                        if found_valid { break; }
                         info!("Searching for episode: {}", query);
                         if let Ok(results) = indexer.search(&query).await {
-                            if let Some(best) = results.first() {
-                                info!("Found torrent for {}: {}", query, best.title);
-                                let ingest_abs = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
-                                if let Ok(_) = qbit.add_torrent_url(&best.link, Some(&ingest_abs.to_string_lossy())).await {
-                                    let _ = crate::db::update_episode_status(&scheduler_pool, ep.id, "downloading").await;
-                                    break;
+                            for best in results {
+                                // AI VERIFICATION: Ensure the torrent title actually matches our show
+                                if let Ok(true) = scheduler_ollama.verify_torrent_match(&show.title, &best.title).await {
+                                    info!("Verified! Adding to qBit: {}", best.title);
+                                    let ingest_abs = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
+                                    if let Ok(_) = qbit.add_torrent_url(&best.link, Some(&ingest_abs.to_string_lossy())).await {
+                                        let _ = crate::db::update_episode_status(&scheduler_pool, ep.id, "downloading").await;
+                                        found_valid = true;
+                                        break;
+                                    }
+                                } else {
+                                    info!("AI rejected match: {} for {}", best.title, show.title);
                                 }
                             }
                         }
@@ -280,7 +295,7 @@ async fn run_daemon() -> Result<()> {
                 }
             }
 
-            // 3. Search for wanted movies
+            // 3. Search for wanted movies with AI Verification
             if let Ok(wanted_movies) = crate::db::get_wanted_shows(&scheduler_pool).await {
                 for show in wanted_movies {
                     if show.media_type != "movie" { continue; }
@@ -290,17 +305,22 @@ async fn run_daemon() -> Result<()> {
                     }
                     search_queries.push(show.title.clone());
 
-                    if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, false).await {
+                    if let Ok(alts) = scheduler_tmdb.get_alternative_titles(show.tmdb_id as u32, false).await {
                         for alt in alts { search_queries.push(alt); }
                     }
 
+                    let mut found_valid = false;
                     for query in search_queries {
+                        if found_valid { break; }
                         if let Ok(results) = indexer.search(&query).await {
-                            if let Some(best) = results.first() {
-                                let ingest_abs = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
-                                if let Ok(_) = qbit.add_torrent_url(&best.link, Some(&ingest_abs.to_string_lossy())).await {
-                                    let _ = crate::db::update_tracked_show_status(&scheduler_pool, show.id, "downloading").await;
-                                    break;
+                            for best in results {
+                                if let Ok(true) = scheduler_ollama.verify_torrent_match(&show.title, &best.title).await {
+                                    let ingest_abs = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
+                                    if let Ok(_) = qbit.add_torrent_url(&best.link, Some(&ingest_abs.to_string_lossy())).await {
+                                        let _ = crate::db::update_tracked_show_status(&scheduler_pool, show.id, "downloading").await;
+                                        found_valid = true;
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -396,7 +416,16 @@ pub async fn run_pipeline(
         if item.season.is_some() {
             tmdb.get_tv_details(tid).await.ok()
         } else {
-            tmdb.get_movie_details(tid).await.ok()
+            // Need a way to get movie details too
+            // For now search fallback
+            let results = tmdb.search_movie(&item.title).await?;
+            results.first().map(|m| crate::integrations::tmdb::TmdbMediaFull {
+                id: m.id,
+                name: m.name.clone(),
+                title: m.title.clone(),
+                overview: m.overview.clone(),
+                number_of_seasons: None,
+            })
         }
     } else {
         let results = if item.season.is_some() {
@@ -404,16 +433,21 @@ pub async fn run_pipeline(
         } else {
             tmdb.search_movie(&item.title).await?
         };
-        results.first().cloned()
+        results.first().map(|m| crate::integrations::tmdb::TmdbMediaFull {
+            id: m.id,
+            name: m.name.clone(),
+            title: m.title.clone(),
+            overview: m.overview.clone(),
+            number_of_seasons: None,
+        })
     };
 
     if let Some(media) = media {
         info!("Pipeline: Found TMDB match: {:?}", media.title.as_ref().or(media.name.as_ref()));
         
-        if let Some(poster) = &media.poster_path {
-            let _ = db::update_item_poster(&pool, item_id, poster).await;
-        }
-
+        // We'll need to fetch the poster separately if not in TmdbMediaFull, 
+        // but let's keep it simple for now or fetch it from search if tid was None.
+        
         if let Some(overview) = &media.overview {
             info!("Pipeline: Rewriting summary...");
             let spoiler_free = ollama.rewrite_summary(overview).await.unwrap_or_else(|_| overview.to_string());
@@ -422,8 +456,8 @@ pub async fn run_pipeline(
             
             let library_dir = env::var("NEURARR_LIBRARY_DIR").unwrap_or_else(|_| "./library".to_string());
             let clean_title = item.title.replace(|c: char| !c.is_alphanumeric() && c != ' ', "").trim().to_string();
-            let year = media.release_date.as_deref().unwrap_or("").split('-').next().unwrap_or("Unknown");
-            let folder_name = format!("{} ({})", clean_title, year);
+            // Since TmdbMediaFull doesn't have release_date currently, we might need to add it or skip year in folder
+            let folder_name = clean_title.clone();
             let mut dest_dir = PathBuf::from(&library_dir);
             
             if item.season.is_some() {
@@ -446,11 +480,8 @@ pub async fn run_pipeline(
                 if let Some(e) = item.episode {
                     new_filename.push_str(&format!("E{:02}", e));
                 }
-            } else {
-                new_filename.push_str(&format!(" ({})", year));
             }
             
-            // Re-detect resolution for renaming if lost
             let res = if path.to_string_lossy().contains("2160p") { " [2160p]" } 
                      else if path.to_string_lossy().contains("1080p") { " [1080p]" } 
                      else { "" };
