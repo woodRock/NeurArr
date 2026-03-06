@@ -92,12 +92,15 @@ pub async fn scan_library(pool: sqlx::SqlitePool) -> Result<()> {
                 let metadata = Parser::parse_regex(&filename);
                 
                 // Smart Linking: check if this file belongs to a tracked show
+                let normalized_filename_title = metadata.title.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "");
+                
                 for show in &tracked {
-                    let mut is_match = show.title.to_lowercase() == metadata.title.to_lowercase();
+                    let normalized_show_title = show.title.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "");
+                    let mut is_match = normalized_show_title == normalized_filename_title;
                     
                     if !is_match {
                         if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, show.media_type == "tv").await {
-                            if alts.iter().any(|a| a.to_lowercase() == metadata.title.to_lowercase()) {
+                            if alts.iter().any(|a| a.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "") == normalized_filename_title) {
                                 is_match = true;
                             }
                         }
