@@ -330,7 +330,7 @@ pub async fn update_episode_status(pool: &SqlitePool, id: i64, status: &str) -> 
 pub async fn get_wanted_episodes(pool: &SqlitePool) -> Result<Vec<(Episode, TrackedShow)>> {
     let profile = get_default_quality_profile(pool).await?;
     let rows = sqlx::query(
-        "SELECT e.*, s.title as show_title, s.media_type, s.tmdb_id as show_tmdb_id, s.year as show_year 
+        "SELECT e.*, s.title as show_title, s.media_type, s.tmdb_id as show_tmdb_id, s.year as show_year, s.total_seasons 
          FROM episodes e 
          JOIN tracked_shows s ON e.show_id = s.id 
          WHERE (e.status = 'wanted' OR (e.status = 'completed' AND e.resolution IS NOT NULL AND e.resolution != ?))
