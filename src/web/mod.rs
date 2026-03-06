@@ -533,7 +533,16 @@ async fn dashboard() -> impl IntoResponse {
         }
         async function saveConfig() { const inputs = document.querySelectorAll('[id^="cfg-"]'); const config = {}; inputs.forEach(input => { const key = input.id.replace('cfg-', ''); config[key] = input.value; }); const res = await fetch('/api/settings/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) }); if(await res.json()) alert('System Core Updated'); }
         async function fetchDisks() { const res = await fetch('/api/disks'); const data = await res.json(); document.getElementById('disk-info').innerHTML = data.map(d => `<div class="glass p-6 rounded-[2rem] border border-white/5 shadow-xl"><div class="flex justify-between text-[10px] font-black uppercase text-slate-400 mb-3 tracking-widest"><span>${d.name}</span><span class="text-sky-500">${(d.available/1024/1024/1024).toFixed(1)}GB AVAILABLE</span></div><div class="w-full h-1.5 bg-white/5 rounded-full overflow-hidden shadow-inner"><div class="h-full bg-sky-500 shadow-[0_0_10px_rgba(56,189,248,0.3)]" style="width:${(1 - d.available/d.total)*100}%"></div></div></div>`).join(''); }
-        async function fetchSysInfo() { const res = await fetch('/api/sysinfo'); const data = await res.json(); document.getElementById('sys-cpu').innerText = `CPU: ${data.cpu_usage.toFixed(1)}%`; document.getElementById('sys-ram').innerText = `RAM: ${data.memory_used}MB`; }
+        async function fetchSysInfo() {
+            try {
+                const res = await fetch('/api/sysinfo');
+                const data = await res.json();
+                const cpuEl = document.getElementById('sys-cpu');
+                const ramEl = document.getElementById('sys-ram');
+                if (cpuEl) cpuEl.innerText = `CPU: ${data.cpu_usage.toFixed(1)}%`;
+                if (ramEl) ramEl.innerText = `RAM: ${data.memory_used}MB`;
+            } catch (e) { console.error("SysInfo poll failed", e); }
+        }
         async function clearQueue() { if(confirm('Purge history?')) { await fetch('/api/media/clear', {method:'DELETE'}); fetchActivity(); } }
         async function scanLibrary() { await fetch('/api/scan-library', {method:'POST'}); alert('Library Synchronization Started'); }
         async function triggerIngest() { await fetch('/api/ingest', {method:'POST'}); alert('Ingest Processor Triggered'); }
@@ -545,7 +554,24 @@ async fn dashboard() -> impl IntoResponse {
         function openInteractiveSearch(title, episodeId, showId, epCode = '', year = '') { currentSearchEpisodeId = episodeId; currentSearchShowId = showId; let query = epCode ? `${title} ${epCode}` : title; if (year) query += ` ${year}`; document.getElementById('interactive-modal-title').innerText = 'Search: ' + query; document.getElementById('interactive-search-input').value = query; document.getElementById('interactive-modal').classList.add('active'); document.getElementById('interactive-results').innerHTML = ''; performInteractiveSearch(); }
         function closeInteractiveModal() { document.getElementById('interactive-modal').classList.remove('active'); }
         async function performInteractiveSearch() { const query = document.getElementById('interactive-search-input').value; if(!query) return; document.getElementById('interactive-results').innerHTML = '<tr><td colspan="5" class="text-center py-10 text-slate-500 uppercase font-bold tracking-widest animate-pulse">Neural Index Query...</td></tr>'; const res = await fetch('/api/interactive-search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) }); const data = await res.json(); document.getElementById('interactive-results').innerHTML = data.length ? data.map(item => `<tr class="hover:bg-white/5 transition-colors text-[11px]"><td class="py-3 px-4 max-w-md"><div class="font-bold text-slate-200 truncate">${item.title}</div></td><td class="py-3 font-mono text-slate-400">${(item.size / 1024 / 1024 / 1024).toFixed(2)} GB</td><td class="py-3 text-center"><span class="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-500 font-black">${item.seeders}</span></td><td class="py-3 text-slate-500 italic">${item.indexer}</td><td class="py-3 pr-4 text-right"><button onclick="downloadTorrent('${item.link.replace(/'/g, "\\'")}', '${item.title.replace(/'/g, "\\'")}')" class="bg-sky-600 hover:bg-sky-500 text-white px-4 py-1.5 rounded-lg font-black text-[9px] uppercase transition-all shadow-lg shadow-sky-900/20">Download</button></td></tr>`).join('') : '<tr><td colspan="5" class="text-center py-20 text-rose-500 font-black uppercase tracking-widest">No matching clusters found</td></tr>'; }
-        async function downloadTorrent(link, title) { const res = await fetch('/api/download-torrent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ link, title, episode_id: currentSearchEpisodeId, show_id: currentSearchShowId }) }); if(await res.json()) { alert('Added to neural ingest'); closeInteractiveModal(); if(currentSearchEpisodeId) { closeEpisodeModal(); fetchActivity(); } if(currentSearchShowId) fetchTracked(); } else { alert('Ingest collision'); } }
+        async function downloadTorrent(link, title) { 
+            try {
+                const res = await fetch('/api/download-torrent', { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' }, 
+                    body: JSON.stringify({ link, title, episode_id: currentSearchEpisodeId, show_id: currentSearchShowId }) 
+                }); 
+                const success = await res.json();
+                if(success) { 
+                    alert('Added to neural ingest'); closeInteractiveModal(); 
+                    if(currentSearchEpisodeId) { closeEpisodeModal(); fetchActivity(); } 
+                    if(currentSearchShowId) fetchTracked(); 
+                } else { alert('Ingest collision or qBittorrent offline'); } 
+            } catch (e) {
+                console.error("Download fail", e);
+                alert('Neural link severed: Check qBittorrent connection');
+            }
+        }
 
         showTab('recommendations'); setInterval(fetchSysInfo, 3000); setInterval(checkScanStatus, 5000); setInterval(fetchActivity, 5000); initLogs();
     </script>
@@ -929,10 +955,12 @@ struct DownloadRequest { link: String, title: String, episode_id: Option<i64>, s
 
 async fn download_torrent(State(state): State<AppState>, Json(req): Json<DownloadRequest>) -> Json<bool> {
     info!("Manual download requested for: {}", req.title);
-    let qbit = crate::integrations::torrent::QBittorrentClient::new().unwrap();
-    let _ = qbit.login().await;
-    let ing = std::fs::canonicalize("./ingest").unwrap_or_else(|_| std::path::PathBuf::from("./ingest"));
-    if qbit.add_torrent_url(&req.link, Some(&ing.to_string_lossy())).await.is_ok() {
+    let result = async {
+        let qbit = crate::integrations::torrent::QBittorrentClient::new()?;
+        let _ = qbit.login().await?;
+        let ing = std::fs::canonicalize("./ingest").unwrap_or_else(|_| std::path::PathBuf::from("./ingest"));
+        qbit.add_torrent_url(&req.link, Some(&ing.to_string_lossy())).await?;
+        
         if let Some(eid) = req.episode_id {
             let _ = db::update_episode_status(&state.pool, eid, "downloading").await;
             if let Ok(rows) = sqlx::query("SELECT s.tmdb_id, s.media_type, s.id as sid FROM episodes e JOIN tracked_shows s ON e.show_id = s.id WHERE e.id = ?").bind(eid).fetch_all(&state.pool).await {
@@ -949,9 +977,10 @@ async fn download_torrent(State(state): State<AppState>, Json(req): Json<Downloa
                 }
             }
         }
-        return Json(true);
-    }
-    Json(false)
+        Ok::<(), anyhow::Error>(())
+    }.await;
+
+    Json(result.is_ok())
 }
 
 async fn mark_watched(State(state): State<AppState>, Path(id): Path<i64>) -> Json<bool> { let _ = db::update_tracked_show_info(&state.pool, id, Some("watched"), None, None).await; Json(true) }
