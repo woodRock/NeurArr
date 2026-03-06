@@ -14,6 +14,7 @@ pub struct MediaMetadata {
 pub struct Parser;
 
 impl Parser {
+    #[allow(dead_code)]
     pub fn parse_llm_json(json_str: &str) -> Result<MediaMetadata> {
         // Try to find JSON within brackets first
         let json_part = if let (Some(start), Some(end)) = (json_str.find('{'), json_str.rfind('}')) {

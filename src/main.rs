@@ -275,10 +275,10 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
     Ok(())
 }
 
-pub async fn scan_ingest_folder(pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, qbit: Arc<QBittorrentClient>) -> Result<()> {
+pub async fn scan_ingest_folder(pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, _qbit: Arc<QBittorrentClient>) -> Result<()> {
     let ingest_dir = env::var("NEURARR_INGEST_DIR").unwrap_or_else(|_| "./ingest".to_string());
     let mut scanner = Scanner::new()?;
-    scanner.scan(pool, tmdb, ollama, qbit, PathBuf::from(ingest_dir)).await
+    scanner.scan(pool, tmdb, ollama, _qbit, PathBuf::from(ingest_dir)).await
 }
 
 async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
@@ -345,7 +345,7 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
     Ok(())
 }
 
-async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, qbit: Arc<QBittorrentClient>) -> Result<()> {
+async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, _qbit: Arc<QBittorrentClient>) -> Result<()> {
     if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
         if !["mkv", "mp4", "avi", "mov"].contains(&path.extension().and_then(|e| e.to_str()).unwrap_or("")) { return Ok(()); }
         let metadata = Parser::parse_regex(filename);

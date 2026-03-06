@@ -116,6 +116,7 @@ pub async fn get_disapproved_ids(pool: &SqlitePool) -> Result<std::collections::
     Ok(rows.into_iter().map(|r| r.0).collect())
 }
 
+#[allow(dead_code)]
 pub async fn get_approved_ids(pool: &SqlitePool) -> Result<Vec<(i64, String)>> {
     Ok(sqlx::query_as("SELECT tmdb_id, media_type FROM recommendation_feedback WHERE vote = 1").fetch_all(pool).await?)
 }
@@ -206,6 +207,7 @@ pub async fn insert_manual_match(pool: &SqlitePool, original_title: &str, tmdb_i
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn update_episode_resolution(pool: &SqlitePool, id: i64, resolution: &str) -> Result<()> {
     sqlx::query("UPDATE episodes SET resolution = ? WHERE id = ?").bind(resolution).bind(id).execute(pool).await?;
     Ok(())

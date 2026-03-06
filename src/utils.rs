@@ -1,6 +1,7 @@
 use notify_rust::Notification;
 use tracing::error;
 
+#[allow(dead_code)]
 pub fn send_notification(title: &str, body: &str) {
     if let Err(e) = Notification::new()
         .summary(title)
@@ -41,6 +42,7 @@ impl Renamer {
     pub fn new(library_dir: String) -> Self {
         Self { library_dir }
     }
+    #[allow(dead_code)]
     pub fn format_movie(template: &str, title: &str, year: &str, quality: &str) -> String {
         template
             .replace("{title}", title)
@@ -48,6 +50,7 @@ impl Renamer {
             .replace("{quality}", quality)
     }
 
+    #[allow(dead_code)]
     pub fn format_tv(template: &str, title: &str, season: i64, episode: i64, quality: &str) -> String {
         template
             .replace("{title}", title)
