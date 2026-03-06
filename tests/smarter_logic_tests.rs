@@ -115,17 +115,15 @@ fn test_quality_upgrade_logic() {
 }
 
 #[test]
-fn test_genre_search_mapping_logic() {
-    let genres = vec![
-        (28, "Action"),
-        (12, "Adventure"),
-        (35, "Comedy"),
+fn test_title_normalization_robustness() {
+    let cases = vec![
+        ("Movie Title: Special Edition!", "movietitlespecialedition"),
+        ("Show Name (US) - Part 1", "shownameuspart1"),
+        ("!@#$%^&*()", ""),
     ];
     
-    let search_term = "comedy";
-    let found_id = genres.iter()
-        .find(|(_, name)| name.to_lowercase() == search_term.to_lowercase())
-        .map(|(id, _)| *id);
-        
-    assert_eq!(found_id, Some(35));
+    for (input, expected) in cases {
+        let normalized = input.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+        assert_eq!(normalized, expected);
+    }
 }

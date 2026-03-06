@@ -1,10 +1,27 @@
 use anyhow::Result;
 use axum::{
     extract::{State, Query, Path},
-    response::{Html, IntoResponse, Redirect},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post, delete},
+    middleware::{self, Next},
+    http::{Request, StatusCode},
     Json, Router,
 };
+
+async fn auth_middleware(
+    jar: CookieJar,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if jar.get("auth").is_none() {
+        let path = req.uri().path();
+        if path == "/login" {
+            return Ok(next.run(req).await);
+        }
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(next.run(req).await)
+}
 use axum_extra::extract::cookie::{Cookie, CookieJar};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -54,7 +71,6 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
 
     let app = Router::new()
         .route("/", get(dashboard))
-        .route("/login", get(login_page).post(handle_login))
         .route("/api/media", get(get_media))
         .route("/api/media/clear", delete(clear_queue))
         .route("/api/media/{id}/match", post(match_media))
@@ -85,6 +101,8 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         .route("/api/quality-profiles", get(get_profiles))
         .route("/api/update", post(trigger_update))
         .route("/api/scan-library", post(scan_library))
+        .layer(middleware::from_fn(auth_middleware))
+        .route("/login", get(login_page).post(handle_login))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
@@ -895,7 +913,7 @@ async fn search_by_genre(State(state): State<AppState>, Query(params): Query<Gen
     if let Some(id) = gid {
         let mut results = Vec::new();
         // Just getting movie discover for now as a representative search
-        let url = format!("https://api.themoviedb.org/3/discover/movie?api_key={}&with_genres={}", std::env::var("TMDB_API_KEY").unwrap_or_default(), id);
+        let url = format!("https://api.themoviedb.org/3/discover/movie?api_key={}&with_genres={}", state.tmdb.api_key, id);
         if let Ok(res) = state.tmdb.client.get(&url).send().await {
             let json_res: Result<crate::integrations::tmdb::TmdbSearchResult, _> = res.json().await;
             if let Ok(json) = json_res {
