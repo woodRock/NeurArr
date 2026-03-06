@@ -731,9 +731,17 @@ async fn track_show(State(state): State<AppState>, Json(req): Json<TrackRequest>
     }
     let genres_str = if genres_vec.is_empty() { None } else { Some(genres_vec.join(",")) };
     match db::insert_tracked_show(&state.pool, &req.title, req.id, &req.media_type, &req.status, req.poster_path, req.release_date, genres_str, total_seasons).await {
-        Ok(_) => {
+        Ok(show_id) => {
             let pool = state.pool.clone();
-            tokio::spawn(async move { let _ = crate::scan_library(pool).await; });
+            let tmdb = state.tmdb.clone();
+            let ollama = state.ollama.clone();
+            if let Ok(qbit) = crate::integrations::torrent::QBittorrentClient::new() {
+                let qbit_arc = std::sync::Arc::new(qbit);
+                tokio::spawn(async move { 
+                    let _ = crate::sync_show_episodes(&pool, &tmdb, show_id).await;
+                    let _ = crate::run_automation_cycle(pool, tmdb, ollama, qbit_arc).await;
+                });
+            }
             Json(true)
         },
         Err(_) => Json(false)

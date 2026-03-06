@@ -33,9 +33,14 @@ pub mod auth {
     }
 }
 
-pub struct Renamer;
+pub struct Renamer {
+    pub library_dir: String,
+}
 
 impl Renamer {
+    pub fn new(library_dir: String) -> Self {
+        Self { library_dir }
+    }
     pub fn format_movie(template: &str, title: &str, year: &str, quality: &str) -> String {
         template
             .replace("{title}", title)
@@ -49,5 +54,26 @@ impl Renamer {
             .replace("{season}", &format!("{:02}", season))
             .replace("{episode}", &format!("{:02}", episode))
             .replace("{quality}", quality)
+    }
+
+    pub async fn move_file(&self, path: &std::path::Path, metadata: &crate::parser::MediaMetadata, final_title: &str) -> anyhow::Result<()> {
+        let mut dest = std::path::PathBuf::from(&self.library_dir);
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mkv");
+        
+        if let Some(s) = metadata.season {
+            dest.push("TV");
+            dest.push(final_title);
+            dest.push(format!("Season {}", s));
+            tokio::fs::create_dir_all(&dest).await?;
+            dest.push(format!("{} - S{:02}E{:02}.{}", final_title, s, metadata.episode.unwrap_or(0), ext));
+        } else {
+            dest.push("Movies");
+            dest.push(final_title);
+            tokio::fs::create_dir_all(&dest).await?;
+            dest.push(format!("{}.{}", final_title, ext));
+        }
+
+        tokio::fs::rename(path, &dest).await?;
+        Ok(())
     }
 }
