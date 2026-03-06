@@ -73,7 +73,6 @@ impl tracing::field::Visit for LogVisitor {
 }
 
 fn load_icon() -> Option<tray_icon::Icon> {
-    // 1. Try to load from assets/logo.png
     if let Ok(img) = image::open("assets/logo.png") {
         let rgba = img.to_rgba8();
         let (width, height) = rgba.dimensions();
@@ -83,7 +82,6 @@ fn load_icon() -> Option<tray_icon::Icon> {
         }
     }
 
-    // 2. Fallback to procedural blue circle
     let mut img = image::RgbaImage::new(32, 32);
     for x in 0..32 {
         for y in 0..32 {
@@ -124,95 +122,91 @@ async fn main() -> Result<()> {
                 let hash = crate::utils::auth::hash_password("admin");
                 db::create_user(&pool, "admin", &hash).await?;
             }
-            return Ok(());
+            Ok(())
         }
-        Some(Commands::Update) => {
-            update_app().await?;
-            return Ok(());
-        }
+        Some(Commands::Update) => update_app().await,
         Some(Commands::Scan) => {
             let pool = init_db().await?;
-            scan_library(pool).await?;
-            return Ok(());
+            scan_library(pool).await
         }
-        _ => {
-            let event_loop = EventLoopBuilder::new().build();
-
-            let menu = Menu::new();
-            let open_i = MenuItem::new("Open NeurArr", true, None);
-            let settings_i = MenuItem::new("Settings", true, None);
-            let logs_i = MenuItem::new("View Logs", true, None);
-            let update_i = MenuItem::new("Restart to Update", true, None);
-            let quit_i = MenuItem::new("Quit NeurArr", true, None);
-
-            menu.append_items(&[
-                &open_i,
-                &settings_i,
-                &logs_i,
-                &PredefinedMenuItem::separator(),
-                &update_i,
-                &PredefinedMenuItem::separator(),
-                &quit_i,
-            ]).unwrap();
-
-            let icon = load_icon().unwrap();
-
-            let mut tray_icon = Some(
-                TrayIconBuilder::new()
-                    .with_menu(Box::new(menu))
-                    .with_tooltip("NeurArr Pro")
-                    .with_icon(icon)
-                    .build()
-                    .unwrap(),
-            );
-
-            let menu_channel = MenuEvent::receiver();
-            let tray_channel = TrayIconEvent::receiver();
-
-            let log_tx_inner = log_tx.clone();
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    if let Err(e) = run_daemon(log_tx_inner).await {
-                        error!("Daemon error: {:?}", e);
-                    }
-                });
-            });
-
-            event_loop.run(move |_event, _, control_flow| {
-                *control_flow = ControlFlow::Wait;
-
-                if let Ok(event) = menu_channel.try_recv() {
-                    if event.id == open_i.id() {
-                        let _ = open::that("http://localhost:3000/");
-                    } else if event.id == settings_i.id() {
-                        let _ = open::that("http://localhost:3000/");
-                    } else if event.id == logs_i.id() {
-                        let _ = open::that("http://localhost:3000/");
-                    } else if event.id == update_i.id() {
-                        std::thread::spawn(|| {
-                            let rt = tokio::runtime::Runtime::new().unwrap();
-                            let _ = rt.block_on(async { update_app().await });
-                        });
-                    } else if event.id == quit_i.id() {
-                        tray_icon.take();
-                        *control_flow = ControlFlow::Exit;
-                    }
-                }
-
-                if let Ok(event) = tray_channel.try_recv() {
-                    match event {
-                        TrayIconEvent::Click { button: tray_icon::MouseButton::Left, .. } => {
-                            let _ = open::that("http://localhost:3000/");
-                        }
-                        _ => {}
-                    }
-                }
-            });
-        }
+        _ => run_tray_daemon(log_tx).await,
     }
+}
 
-    Ok(())
+async fn run_tray_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
+    let event_loop = EventLoopBuilder::new().build();
+
+    let menu = Menu::new();
+    let open_i = MenuItem::new("Open NeurArr", true, None);
+    let settings_i = MenuItem::new("Settings", true, None);
+    let logs_i = MenuItem::new("View Logs", true, None);
+    let update_i = MenuItem::new("Restart to Update", true, None);
+    let quit_i = MenuItem::new("Quit NeurArr", true, None);
+
+    menu.append_items(&[
+        &open_i,
+        &settings_i,
+        &logs_i,
+        &PredefinedMenuItem::separator(),
+        &update_i,
+        &PredefinedMenuItem::separator(),
+        &quit_i,
+    ]).unwrap();
+
+    let icon = load_icon().unwrap();
+
+    let mut tray_icon = Some(
+        TrayIconBuilder::new()
+            .with_menu(Box::new(menu))
+            .with_tooltip("NeurArr Pro")
+            .with_icon(icon)
+            .build()
+            .unwrap(),
+    );
+
+    let menu_channel = MenuEvent::receiver();
+    let tray_channel = TrayIconEvent::receiver();
+
+    let log_tx_inner = log_tx.clone();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            if let Err(e) = run_daemon(log_tx_inner).await {
+                error!("Daemon error: {:?}", e);
+            }
+        });
+    });
+
+    event_loop.run(move |_event, _, control_flow| {
+        *control_flow = ControlFlow::Wait;
+
+        if let Ok(event) = menu_channel.try_recv() {
+            if event.id == open_i.id() {
+                let _ = open::that("http://localhost:3000/");
+            } else if event.id == settings_i.id() {
+                let _ = open::that("http://localhost:3000/");
+            } else if event.id == logs_i.id() {
+                let _ = open::that("http://localhost:3000/");
+            } else if event.id == update_i.id() {
+                std::thread::spawn(|| {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    let _ = rt.block_on(async { update_app().await });
+                });
+            } else if event.id == quit_i.id() {
+                tray_icon.take();
+                *control_flow = ControlFlow::Exit;
+            }
+        }
+
+        if let Ok(event) = tray_channel.try_recv() {
+            match event {
+                TrayIconEvent::Click { button: tray_icon::MouseButton::Left, .. } => {
+                    let _ = open::that("http://localhost:3000/");
+                }
+                _ => {}
+            }
+        }
+    });
 }
 
 pub async fn scan_library(pool: sqlx::SqlitePool) -> Result<()> {
@@ -288,31 +282,22 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
 
     info!("Automation: Starting cycle...");
 
-    // 1. Sync metadata for all TV shows
     if let Ok(tracked) = db::get_tracked_shows(&pool).await {
         for show in tracked { 
-            if show.media_type == "tv" {
-                let _ = sync_show_episodes(&pool, &tmdb, show.id).await; 
-            }
+            if show.media_type == "tv" { let _ = sync_show_episodes(&pool, &tmdb, show.id).await; }
         }
     }
 
-    // 2. Check for Season Packs
     if let Ok(needed_seasons) = db::get_needed_seasons(&pool).await {
         for (season_num, show) in needed_seasons {
             let s_code = format!("S{:02}", season_num);
             let mut queries = Vec::new();
             let year_str = show.year.map(|y| y.to_string()).unwrap_or_default();
-            
             queries.push(format!("{} {}", show.title, s_code));
-            if !year_str.is_empty() {
-                queries.push(format!("{} {} {}", show.title, year_str, s_code));
-            }
-
+            if !year_str.is_empty() { queries.push(format!("{} {} {}", show.title, year_str, s_code)); }
             if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, true).await {
                 for alt in alts { queries.push(format!("{} {}", alt, s_code)); }
             }
-            
             let mut found = false;
             for q in queries {
                 if found { break; }
@@ -322,16 +307,13 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
                         let t = r.title.to_lowercase();
                         if let Some(y) = show.year {
                             let y_s = y.to_string();
-                            let other_year = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap().find_iter(&r.title)
-                                .any(|m| m.as_str() != y_s);
+                            let other_year = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap().find_iter(&r.title).any(|m| m.as_str() != y_s);
                             if other_year && !t.contains(&y_s) { return false; }
                         }
                         t.contains(&s_code.to_lowercase()) && (t.contains("complete") || t.contains("season") || !t.contains("e0"))
                     }).collect();
-
                     for best in filtered {
                         if let Ok(true) = ollama.verify_torrent_match(&show.title, &best.title).await {
-                            info!("Automation: Found confirmed pack: {}", best.title);
                             let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
                             if qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
                                 let _ = db::update_season_status(&pool, show.id, season_num, "downloading").await;
@@ -345,18 +327,13 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
         }
     }
 
-    // 3. Check for Individual Episodes
     if let Ok(wanted_eps) = db::get_wanted_episodes(&pool).await {
         for (ep, show) in wanted_eps {
             let ep_code = format!("S{:02}E{:02}", ep.season, ep.episode);
             let mut queries = Vec::new();
             let year_str = show.year.map(|y| y.to_string()).unwrap_or_default();
-
             queries.push(format!("{} {}", show.title, ep_code));
-            if !year_str.is_empty() {
-                queries.push(format!("{} {} {}", show.title, year_str, ep_code));
-            }
-
+            if !year_str.is_empty() { queries.push(format!("{} {} {}", show.title, year_str, ep_code)); }
             if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, true).await {
                 for alt in alts { queries.push(format!("{} {}", alt, ep_code)); }
             }
@@ -369,8 +346,7 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
                         let t = r.title.to_lowercase();
                         if let Some(y) = show.year {
                             let y_s = y.to_string();
-                            let other_year = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap().find_iter(&r.title)
-                                .any(|m| m.as_str() != y_s);
+                            let other_year = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap().find_iter(&r.title).any(|m| m.as_str() != y_s);
                             if other_year && !t.contains(&y_s) { return false; }
                         }
                         if let Some(p) = &profile {
@@ -382,7 +358,6 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
                     }).collect();
                     for best in filtered {
                         if let Ok(true) = ollama.verify_torrent_match(&show.title, &best.title).await {
-                            info!("Automation: Found confirmed episode: {}", best.title);
                             let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
                             if qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
                                 let _ = db::update_episode_status(&pool, ep.id, "downloading").await;
@@ -396,21 +371,15 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
         }
     }
 
-    // 4. Check for Wanted Movies
     if let Ok(wanted_movies) = db::get_wanted_movies(&pool).await {
         for movie in wanted_movies {
             let mut queries = Vec::new();
             let year_str = movie.year.map(|y| y.to_string()).unwrap_or_default();
-            
             queries.push(movie.title.clone());
-            if !year_str.is_empty() {
-                queries.push(format!("{} {}", movie.title, year_str));
-            }
-
+            if !year_str.is_empty() { queries.push(format!("{} {}", movie.title, year_str)); }
             if let Ok(alts) = tmdb.get_alternative_titles(movie.tmdb_id as u32, false).await {
                 for alt in alts { queries.push(alt); }
             }
-
             let mut found = false;
             for q in queries {
                 if found { break; }
@@ -420,8 +389,7 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
                         let t = r.title.to_lowercase();
                         if let Some(y) = movie.year {
                             let y_s = y.to_string();
-                            let other_year = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap().find_iter(&r.title)
-                                .any(|m| m.as_str() != y_s);
+                            let other_year = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap().find_iter(&r.title).any(|m| m.as_str() != y_s);
                             if other_year && !t.contains(&y_s) { return false; }
                         }
                         if let Some(p) = &profile {
@@ -431,10 +399,8 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
                         }
                         !t.contains("soundtrack") && !t.contains("ost")
                     }).collect();
-
                     for best in filtered {
                         if let Ok(true) = ollama.verify_torrent_match(&movie.title, &best.title).await {
-                            info!("Automation: Found confirmed movie: {}", best.title);
                             let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
                             if qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
                                 let _ = db::update_tracked_show_status(&pool, movie.id, "downloading").await;
@@ -481,7 +447,7 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
     let ingest_dir = env::var("NEURARR_INGEST_DIR").unwrap_or_else(|_| "./ingest".to_string());
     
     let ai_semaphore = Arc::new(Semaphore::new(1));
-    let processing_registry = Arc::new(Mutex::new(std::collections::HashSet::new()));
+    let processing_registry = Arc::new(Mutex::new(HashSet::new()));
 
     let mut scanner = Scanner::new()?;
     let _ = scanner.watch(PathBuf::from(&ingest_dir))?;
@@ -600,3 +566,5 @@ async fn update_app() -> Result<()> {
 async fn start_web_server(pool: sqlx::SqlitePool, log_tx: broadcast::Sender<String>) -> Result<()> {
     crate::web::start_web_server(pool, log_tx).await
 }
+
+use std::collections::HashSet;
