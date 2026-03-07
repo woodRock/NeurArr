@@ -750,7 +750,7 @@ async fn track_show(State(state): State<AppState>, Json(req): Json<TrackRequest>
                 let qbit_arc = std::sync::Arc::new(qbit);
                 tokio::spawn(async move { 
                     let _ = crate::sync_show_episodes(&pool, &tmdb, show_id).await;
-                    let _ = crate::run_automation_cycle(pool, tmdb, ollama, qbit_arc).await;
+                    let _ = crate::run_automation_cycle(pool, tmdb, ollama, qbit_arc, Some(show_id)).await;
                 });
             }
             Json(true)

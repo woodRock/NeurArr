@@ -276,20 +276,24 @@ pub async fn sync_show_episodes(pool: &sqlx::SqlitePool, tmdb: &TmdbClient, show
     Ok(())
 }
 
-pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, qbit: Arc<QBittorrentClient>) -> Result<()> {
+pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, qbit: Arc<QBittorrentClient>, target_show_id: Option<i64>) -> Result<()> {
     let indexer = crate::integrations::indexer::IndexerClient::new().unwrap();
     let profile = db::get_default_quality_profile(&pool).await.ok();
 
-    info!("Automation: Starting cycle...");
+    info!("Automation: Starting cycle (Target: {:?})...", target_show_id);
 
+    // 1. Sync metadata for all TV shows (only if no target, or target matches)
     if let Ok(tracked) = db::get_tracked_shows(&pool).await {
         for show in tracked { 
+            if let Some(tid) = target_show_id { if show.id != tid { continue; } }
             if show.media_type == "tv" && show.status != "watchlist" { let _ = sync_show_episodes(&pool, &tmdb, show.id).await; }
         }
     }
 
+    // 2. Check for Season Packs
     if let Ok(needed_seasons) = db::get_needed_seasons(&pool).await {
         for (season_num, show) in needed_seasons {
+            if let Some(tid) = target_show_id { if show.id != tid { continue; } }
             let s_code = format!("S{:02}", season_num);
             let mut queries = Vec::new();
             let year_str = show.year.map(|y| y.to_string()).unwrap_or_default();
@@ -331,8 +335,10 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
         }
     }
 
+    // 3. Check for Individual Episodes
     if let Ok(wanted_eps) = db::get_wanted_episodes(&pool).await {
         for (ep, show) in wanted_eps {
+            if let Some(tid) = target_show_id { if show.id != tid { continue; } }
             let ep_code = format!("S{:02}E{:02}", ep.season, ep.episode);
             let mut queries = Vec::new();
             let year_str = show.year.map(|y| y.to_string()).unwrap_or_default();
@@ -379,8 +385,10 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
         }
     }
 
+    // 4. Check for Wanted Movies
     if let Ok(wanted_movies) = db::get_wanted_movies(&pool).await {
         for movie in wanted_movies {
+            if let Some(tid) = target_show_id { if movie.id != tid { continue; } }
             let mut queries = Vec::new();
             let year_str = movie.year.map(|y| y.to_string()).unwrap_or_default();
             queries.push(movie.title.clone());
@@ -505,7 +513,7 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
     
     tokio::spawn(async move {
         loop {
-            let _ = run_automation_cycle(scheduler_pool.clone(), scheduler_tmdb.clone(), scheduler_ollama.clone(), scheduler_qbit.clone()).await;
+            let _ = run_automation_cycle(scheduler_pool.clone(), scheduler_tmdb.clone(), scheduler_ollama.clone(), scheduler_qbit.clone(), None).await;
             let _ = scan_ingest_folder(scheduler_pool.clone(), scheduler_tmdb.clone(), scheduler_ollama.clone(), scheduler_qbit.clone()).await;
             tokio::time::sleep(std::time::Duration::from_secs(1800)).await;
         }
