@@ -72,6 +72,7 @@ pub async fn get_items_by_title(pool: &SqlitePool, title: &str) -> Result<Vec<cr
     Ok(sqlx::query_as::<_, crate::web::MediaItem>("SELECT * FROM media_items WHERE LOWER(title) = LOWER(?) AND status != 'completed'").bind(title).fetch_all(pool).await?)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_tracked_show(pool: &SqlitePool, title: &str, tmdb_id: u32, media_type: &str, status: &str, poster_path: Option<String>, release_date: Option<String>, genres: Option<String>, total_seasons: u32) -> Result<i64> {
     let year = release_date.as_deref().and_then(|d| d.split('-').next()).and_then(|y| y.parse::<i32>().ok());
     sqlx::query("INSERT INTO tracked_shows (title, tmdb_id, media_type, status, poster_path, release_date, year, genres, total_seasons) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(tmdb_id) DO UPDATE SET status = EXCLUDED.status, total_seasons = EXCLUDED.total_seasons")
@@ -267,11 +268,9 @@ pub async fn get_tracked_show_by_title(pool: &SqlitePool, title: &str, year: Opt
         // Must match ALL words of the title
         if match_count == show_words.len() {
             // If year is provided in filename, it MUST match the database year
-            if let Some(f_year) = year {
-                if let Some(s_year) = show.year {
-                    if f_year != s_year { continue; }
-                }
-            }
+            if let Some(f_year) = year
+                && let Some(s_year) = show.year
+                    && f_year != s_year { continue; }
 
             // Prefer the most specific match (e.g. "Star Wars Episode I" over "Star Wars")
             if show_words.len() > max_match_words {

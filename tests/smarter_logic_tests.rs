@@ -12,11 +12,9 @@ fn test_genre_chip_calculation_logic() {
         None,
     ];
 
-    for genres in tracked_genres {
-        if let Some(gs) = genres {
-            for g in gs.split(',') {
-                *genre_counts.entry(g.trim().to_string()).or_insert(0) += 1;
-            }
+    for gs in tracked_genres.into_iter().flatten() {
+        for g in gs.split(',') {
+            *genre_counts.entry(g.trim().to_string()).or_insert(0) += 1;
         }
     }
     
@@ -50,12 +48,10 @@ fn test_recommendation_seed_logic() {
     #[derive(Clone)]
     struct MockTracked { rating: i64, title: String }
     
-    let mut tracked = vec![
-        MockTracked { rating: 5, title: "Best Show".to_string() },
+    let mut tracked = [MockTracked { rating: 5, title: "Best Show".to_string() },
         MockTracked { rating: 3, title: "Okay Show".to_string() },
         MockTracked { rating: 0, title: "Unrated Show".to_string() },
-        MockTracked { rating: 5, title: "Another Best".to_string() },
-    ];
+        MockTracked { rating: 5, title: "Another Best".to_string() }];
 
     // Logic from get_recommendations
     tracked.sort_by(|a, b| b.rating.cmp(&a.rating));
@@ -77,7 +73,7 @@ fn test_backoff_threshold_logic() {
     
     struct MockEp { attempts: i64, last_searched: i64 }
     
-    let episodes = vec![
+    let episodes = [
         MockEp { attempts: 0, last_searched: 0 }, // New
         MockEp { attempts: 5, last_searched: 990 }, // Should back-off (last searched 10 ago)
         MockEp { attempts: 5, last_searched: 950 }, // Should retry (last searched 50 ago)
@@ -88,10 +84,10 @@ fn test_backoff_threshold_logic() {
         e.attempts < 3 || e.last_searched < thirty_mins_ago
     }).collect();
 
-    assert_eq!(results[0], true);
-    assert_eq!(results[1], false);
-    assert_eq!(results[2], true);
-    assert_eq!(results[3], true);
+    assert!(results[0]);
+    assert!(!results[1]);
+    assert!(results[2]);
+    assert!(results[3]);
 }
 
 #[test]
@@ -143,14 +139,12 @@ fn test_search_year_extraction_logic() {
         let mut query = input.to_string();
         let mut year = None;
         
-        if let Some(caps) = re.captures(input) {
-            if let Some(y_match) = caps.get(1) {
-                if let Ok(y) = y_match.as_str().parse::<u32>() {
+        if let Some(caps) = re.captures(input)
+            && let Some(y_match) = caps.get(1)
+                && let Ok(y) = y_match.as_str().parse::<u32>() {
                     year = Some(y);
                     query = re.replace(input, "").to_string();
                 }
-            }
-        }
         
         assert_eq!(query, exp_title);
         assert_eq!(year, exp_year);
@@ -168,7 +162,7 @@ fn test_recursive_ingestion_file_check() {
 
     let mut video_files = Vec::new();
     for f in test_files {
-        let ext = f.split('.').last().unwrap_or("");
+        let ext = f.split('.').next_back().unwrap_or("");
         if ["mkv", "mp4", "avi", "mov"].contains(&ext) {
             video_files.push(f);
         }
@@ -180,7 +174,7 @@ fn test_recursive_ingestion_file_check() {
 
 #[test]
 fn test_activity_status_mapping() {
-    let statuses = vec!["parsed", "summarized", "other"];
+    let statuses = ["parsed", "summarized", "other"];
     let results: Vec<&str> = statuses.iter().map(|s| {
         match *s {
             "parsed" => "Matched",

@@ -2,7 +2,6 @@ use anyhow::Result;
 use reqwest::Client;
 use serde::Deserialize;
 use std::env;
-use std::path::PathBuf;
 use tracing::info;
 
 pub struct SubtitleClient {
@@ -51,7 +50,7 @@ impl SubtitleClient {
         })
     }
 
-    pub async fn download_subtitles(&self, filename: &str, dest_path: &PathBuf) -> Result<()> {
+    pub async fn download_subtitles(&self, filename: &str, dest_path: &std::path::Path) -> Result<()> {
         if self.api_key.is_empty() { return Ok(()); }
 
         info!("Searching subtitles for: {}", filename);
@@ -62,8 +61,8 @@ impl SubtitleClient {
             .send().await?
             .json::<OpenSubtitlesSearchResponse>().await?;
 
-        if let Some(sub) = res.data.first() {
-            if let Some(file) = sub.attributes.files.first() {
+        if let Some(sub) = res.data.first()
+            && let Some(file) = sub.attributes.files.first() {
                 info!("Found subtitle: {}. Downloading...", file.file_name);
                 
                 let dl_url = "https://api.opensubtitles.com/api/v1/download";
@@ -80,7 +79,6 @@ impl SubtitleClient {
                 tokio::fs::write(&sub_path, content).await?;
                 info!("Subtitles saved to: {:?}", sub_path);
             }
-        }
 
         Ok(())
     }

@@ -28,7 +28,6 @@ use tray_icon::{TrayIconBuilder, TrayIconEvent};
 use muda::{MenuEvent, Menu, MenuItem, PredefinedMenuItem};
 use tao::event_loop::{EventLoopBuilder, ControlFlow};
 use image::Rgba;
-use open;
 
 #[derive(ClapParser)]
 #[command(name = "neurarr")]
@@ -181,11 +180,7 @@ async fn run_tray_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
         *control_flow = ControlFlow::Wait;
 
         if let Ok(event) = menu_channel.try_recv() {
-            if event.id == open_i.id() {
-                let _ = open::that("http://localhost:3000/");
-            } else if event.id == settings_i.id() {
-                let _ = open::that("http://localhost:3000/");
-            } else if event.id == logs_i.id() {
+            if event.id == open_i.id() || event.id == settings_i.id() || event.id == logs_i.id() {
                 let _ = open::that("http://localhost:3000/");
             } else if event.id == update_i.id() {
                 std::thread::spawn(|| {
@@ -198,14 +193,10 @@ async fn run_tray_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
             }
         }
 
-        if let Ok(event) = tray_channel.try_recv() {
-            match event {
-                TrayIconEvent::Click { button: tray_icon::MouseButton::Left, .. } => {
-                    let _ = open::that("http://localhost:3000/");
-                }
-                _ => {}
+        if let Ok(event) = tray_channel.try_recv()
+            && let TrayIconEvent::Click { button: tray_icon::MouseButton::Left, .. } = event {
+                let _ = open::that("http://localhost:3000/");
             }
-        }
     });
 }
 
@@ -228,13 +219,11 @@ pub async fn scan_library(pool: sqlx::SqlitePool) -> Result<()> {
                     let normalized_show_title = show.title.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "");
                     let mut is_match = normalized_show_title == normalized_filename_title;
                     
-                    if !is_match {
-                        if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, show.media_type == "tv").await {
-                            if alts.iter().any(|(_, a)| a.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "") == normalized_filename_title) {
+                    if !is_match
+                        && let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, show.media_type == "tv").await
+                            && alts.iter().any(|(_, a)| a.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "") == normalized_filename_title) {
                                 is_match = true;
                             }
-                        }
-                    }
 
                     if is_match {
                         if let (Some(s), Some(e)) = (metadata.season, metadata.episode) {
@@ -253,9 +242,9 @@ pub async fn scan_library(pool: sqlx::SqlitePool) -> Result<()> {
 }
 
 pub async fn sync_show_episodes(pool: &sqlx::SqlitePool, tmdb: &TmdbClient, show_id: i64) -> Result<()> {
-    if let Ok(Some(show)) = db::get_show_by_id(pool, show_id).await {
-        if show.media_type == "tv" {
-            if let Ok(full) = tmdb.get_tv_details(show.tmdb_id as u32).await {
+    if let Ok(Some(show)) = db::get_show_by_id(pool, show_id).await
+        && show.media_type == "tv"
+            && let Ok(full) = tmdb.get_tv_details(show.tmdb_id as u32).await {
                 let seasons = full.number_of_seasons.unwrap_or(1);
                 for s in 1..=seasons {
                     if let Ok(eps) = tmdb.get_tv_season(show.tmdb_id as u32, s).await {
@@ -271,14 +260,13 @@ pub async fn sync_show_episodes(pool: &sqlx::SqlitePool, tmdb: &TmdbClient, show
                     }
                 }
             }
-        }
-    }
     Ok(())
 }
 
 pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, qbit: Arc<QBittorrentClient>, target_show_id: Option<i64>) -> Result<()> {
     let indexer = crate::integrations::indexer::IndexerClient::new().unwrap();
     let profile = db::get_default_quality_profile(&pool).await.ok();
+    let year_re = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap();
 
     info!("Automation: Starting cycle (Target: {:?})...", target_show_id);
     
@@ -289,14 +277,14 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
 
     if let Ok(tracked) = db::get_tracked_shows(&pool).await {
         for show in tracked { 
-            if let Some(tid) = target_show_id { if show.id != tid { continue; } }
+            if let Some(tid) = target_show_id && show.id != tid { continue; }
             if show.media_type == "tv" && show.status != "watchlist" { let _ = sync_show_episodes(&pool, &tmdb, show.id).await; }
         }
     }
 
     if let Ok(needed_seasons) = db::get_needed_seasons(&pool).await {
         for (season_num, show) in needed_seasons {
-            if let Some(tid) = target_show_id { if show.id != tid { continue; } }
+            if let Some(tid) = target_show_id && show.id != tid { continue; }
             let s_code = format!("S{:02}", season_num);
             let mut queries = Vec::new();
             let year_str = show.year.map(|y| y.to_string()).unwrap_or_default();
@@ -304,7 +292,7 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
             if !year_str.is_empty() { queries.push(format!("{} {} {}", show.title, year_str, s_code)); }
             if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, true).await {
                 for (iso, alt) in alts { 
-                    if ["US", "GB", "AU", "CA"].contains(&iso.as_str()) || alt.chars().all(|c| c.is_ascii()) {
+                    if ["US", "GB", "AU", "CA"].contains(&iso.as_str()) || alt.is_ascii() {
                         queries.push(format!("{} {}", alt, s_code)); 
                     }
                 }
@@ -318,7 +306,7 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
                         let t = r.title.to_lowercase();
                         if let Some(y) = show.year {
                             let y_s = y.to_string();
-                            let other_year = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap().find_iter(&r.title).any(|m| m.as_str() != y_s);
+                            let other_year = year_re.find_iter(&r.title).any(|m| m.as_str() != y_s);
                             if other_year && !t.contains(&y_s) { return false; }
                         }
                         t.contains(&s_code.to_lowercase()) && (t.contains("complete") || t.contains("season") || !t.contains("e0"))
@@ -354,7 +342,7 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
 
     if let Ok(wanted_eps) = db::get_wanted_episodes(&pool).await {
         for (ep, show) in wanted_eps {
-            if let Some(tid) = target_show_id { if show.id != tid { continue; } }
+            if let Some(tid) = target_show_id && show.id != tid { continue; }
             let ep_code = format!("S{:02}E{:02}", ep.season, ep.episode);
             let mut queries = Vec::new();
             let year_str = show.year.map(|y| y.to_string()).unwrap_or_default();
@@ -362,7 +350,7 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
             if !year_str.is_empty() { queries.push(format!("{} {} {}", show.title, year_str, ep_code)); }
             if let Ok(alts) = tmdb.get_alternative_titles(show.tmdb_id as u32, true).await {
                 for (iso, alt) in alts { 
-                    if ["US", "GB", "AU", "CA"].contains(&iso.as_str()) || alt.chars().all(|c| c.is_ascii()) {
+                    if ["US", "GB", "AU", "CA"].contains(&iso.as_str()) || alt.is_ascii() {
                         queries.push(format!("{} {}", alt, ep_code)); 
                     }
                 }
@@ -376,11 +364,11 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
                         let t = r.title.to_lowercase();
                         if let Some(y) = show.year {
                             let y_s = y.to_string();
-                            let other_year = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap().find_iter(&r.title).any(|m| m.as_str() != y_s);
+                            let other_year = year_re.find_iter(&r.title).any(|m| m.as_str() != y_s);
                             if other_year && !t.contains(&y_s) { return false; }
                         }
                         if let Some(p) = &profile {
-                            if let Some(must) = &p.must_contain { if !must.is_empty() && !t.contains(must) { return false; } }
+                            if let Some(must) = &p.must_contain && !must.is_empty() && !t.contains(must) { return false; }
                             if let Some(not) = &p.must_not_contain { for w in not.split(',') { if !w.trim().is_empty() && t.contains(w.trim().to_lowercase().as_str()) { return false; } } }
                             if p.max_resolution == "1080p" && t.contains("2160p") { return false; }
                         }
@@ -417,14 +405,14 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
 
     if let Ok(wanted_movies) = db::get_wanted_movies(&pool).await {
         for movie in wanted_movies {
-            if let Some(tid) = target_show_id { if movie.id != tid { continue; } }
+            if let Some(tid) = target_show_id && movie.id != tid { continue; }
             let mut queries = Vec::new();
             let year_str = movie.year.map(|y| y.to_string()).unwrap_or_default();
             queries.push(movie.title.clone());
             if !year_str.is_empty() { queries.push(format!("{} {}", movie.title, year_str)); }
             if let Ok(alts) = tmdb.get_alternative_titles(movie.tmdb_id as u32, false).await {
                 for (iso, alt) in alts { 
-                    if ["US", "GB", "AU", "CA"].contains(&iso.as_str()) || alt.chars().all(|c| c.is_ascii()) {
+                    if ["US", "GB", "AU", "CA"].contains(&iso.as_str()) || alt.is_ascii() {
                         queries.push(alt); 
                     }
                 }
@@ -438,11 +426,11 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
                         let t = r.title.to_lowercase();
                         if let Some(y) = movie.year {
                             let y_s = y.to_string();
-                            let other_year = regex::Regex::new(r"\b(19|20)\d{2}\b").unwrap().find_iter(&r.title).any(|m| m.as_str() != y_s);
+                            let other_year = year_re.find_iter(&r.title).any(|m| m.as_str() != y_s);
                             if other_year && !t.contains(&y_s) { return false; }
                         }
                         if let Some(p) = &profile {
-                            if let Some(must) = &p.must_contain { if !must.is_empty() && !t.contains(must) { return false; } }
+                            if let Some(must) = &p.must_contain && !must.is_empty() && !t.contains(must) { return false; }
                             if let Some(not) = &p.must_not_contain { for w in not.split(',') { if !w.trim().is_empty() && t.contains(w.trim().to_lowercase().as_str()) { return false; } } }
                             if p.max_resolution == "1080p" && t.contains("2160p") { return false; }
                         }
@@ -513,7 +501,7 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
     let processing_registry = Arc::new(Mutex::new(HashSet::new()));
 
     let mut scanner = Scanner::new()?;
-    let _ = scanner.watch(PathBuf::from(&ingest_dir))?;
+    scanner.watch(PathBuf::from(&ingest_dir))?;
 
     tokio::spawn(async move {
         while let Some(res) = scanner.next_event().await {
@@ -571,10 +559,7 @@ use std::fs::OpenOptions;
 fn is_file_locked(path: &PathBuf) -> bool {
     // Try to open the file in append mode. If it fails, it's likely being written to.
     // Note: This is a common heuristic on Windows/Unix for finding exclusive locks.
-    match OpenOptions::new().append(true).open(path) {
-        Ok(_) => false,
-        Err(_) => true,
-    }
+    OpenOptions::new().append(true).open(path).is_err()
 }
 
 async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, _qbit: Arc<QBittorrentClient>) -> Result<()> {
@@ -608,12 +593,11 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
                     let f = entry.path().file_name().and_then(|s| s.to_str()).unwrap_or("");
                     if ["mkv", "mp4", "avi", "mov"].contains(&entry.path().extension().and_then(|e| e.to_str()).unwrap_or("")) {
                         let meta = Parser::parse_regex(f);
-                        let summary = ollama.rewrite_summary(&details.overview.as_deref().unwrap_or_default()).await.unwrap_or_default();
+                        let summary = ollama.rewrite_summary(details.overview.as_deref().unwrap_or_default()).await.unwrap_or_default();
                         let item_id = db::insert_media_item(&pool, f, &meta).await?;
                         db::update_media_item_full(&pool, item_id, pending.tmdb_id as u32, &final_title, summary, meta.season.map(|s| s as i32), meta.episode.map(|e| e as i32)).await?;
-                        if let (Some(s), Some(e)) = (meta.season, meta.episode) {
-                            if let Some(sid) = pending.show_id { let _ = db::update_episode_status_completed(&pool, sid, s as i32, e as i32).await; }
-                        }
+                        if let (Some(s), Some(e)) = (meta.season, meta.episode)
+                            && let Some(sid) = pending.show_id { let _ = db::update_episode_status_completed(&pool, sid, s as i32, e as i32).await; }
                         let _ = Renamer::new(env::var("NEURARR_LIBRARY_DIR")?).move_file(entry.path(), &meta, &final_title).await;
                     }
                 }
@@ -658,7 +642,7 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
 
                     if ["mkv", "mp4", "avi", "mov"].contains(&ext.as_str()) {
                         let meta = Parser::parse_regex(f);
-                        let summary = ollama.rewrite_summary(&details.overview.as_deref().unwrap_or_default()).await.unwrap_or_default();
+                        let summary = ollama.rewrite_summary(details.overview.as_deref().unwrap_or_default()).await.unwrap_or_default();
                         let item_id = db::insert_media_item(&pool, f, &meta).await?;
                         db::update_media_item_full(&pool, item_id, tmdb_id, &final_title, summary, meta.season.map(|s| s as i32), meta.episode.map(|e| e as i32)).await?;
                         if let (Some(s), Some(e)) = (meta.season, meta.episode) {
@@ -678,7 +662,7 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
         if !["mkv", "mp4", "avi", "mov"].contains(&path.extension().and_then(|e| e.to_str()).unwrap_or("")) { return Ok(()); }
         let metadata = Parser::parse_regex(filename);
         let item_id = db::insert_media_item(&pool, filename, &metadata).await?;
-        if let Err(e) = run_pipeline(item_id, path, pool, tmdb, ollama, None, None).await {
+        if let Err(e) = run_pipeline(item_id, path.clone(), pool, tmdb, ollama, None, None).await {
             error!("Ingest: Error processing {}: {:?}", filename, e);
             return Err(e);
         }
@@ -760,18 +744,15 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
     
     // Update episode/show status to completed
     if let (Some(s), Some(e)) = (metadata.season, metadata.episode) {
-        if let Ok(tracked) = db::get_tracked_shows(&pool).await {
-            if let Some(show) = tracked.iter().find(|t| t.tmdb_id == tmdb_id as i64) {
+        if let Ok(tracked) = db::get_tracked_shows(&pool).await
+            && let Some(show) = tracked.iter().find(|t| t.tmdb_id == tmdb_id as i64) {
                 let _ = db::update_episode_status_completed(&pool, show.id, s as i32, e as i32).await;
             }
-        }
-    } else if metadata.season.is_none() {
-        if let Ok(tracked) = db::get_tracked_shows(&pool).await {
-            if let Some(show) = tracked.iter().find(|t| t.tmdb_id == tmdb_id as i64) {
+    } else if metadata.season.is_none()
+        && let Ok(tracked) = db::get_tracked_shows(&pool).await
+            && let Some(show) = tracked.iter().find(|t| t.tmdb_id == tmdb_id as i64) {
                 let _ = db::update_tracked_show_status(&pool, show.id, "completed").await;
             }
-        }
-    }
 
     info!("Ingest: Moving file to library...");
     let renamer = Renamer::new(env::var("NEURARR_LIBRARY_DIR")?);

@@ -181,18 +181,16 @@ impl TmdbClient {
         let response = self.client.get(&url).send().await?.json::<serde_json::Value>().await?;
         
         let mut titles = Vec::new();
-        if let Some(results) = response.get("results").or(response.get("titles")) {
-            if let Some(arr) = results.as_array() {
+        if let Some(results) = response.get("results").or(response.get("titles"))
+            && let Some(arr) = results.as_array() {
                 for item in arr {
                     let iso = item.get("iso_3166_1").and_then(|v| v.as_str()).unwrap_or("??").to_string();
-                    if let Some(title) = item.get("title").or(item.get("name")) {
-                        if let Some(s) = title.as_str() {
+                    if let Some(title) = item.get("title").or(item.get("name"))
+                        && let Some(s) = title.as_str() {
                             titles.push((iso, s.to_string()));
                         }
-                    }
                 }
             }
-        }
         Ok(titles)
     }
 }

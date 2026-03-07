@@ -142,12 +142,11 @@ async fn login_page() -> Html<&'static str> {
 struct LoginData { username: String, password: String }
 
 async fn handle_login(State(state): State<AppState>, jar: CookieJar, axum::Form(data): axum::Form<LoginData>) -> impl IntoResponse {
-    if let Ok(Some(hash)) = db::get_user_hash(&state.pool, &data.username).await {
-        if crate::utils::auth::verify_password(&data.password, &hash) {
+    if let Ok(Some(hash)) = db::get_user_hash(&state.pool, &data.username).await
+        && crate::utils::auth::verify_password(&data.password, &hash) {
             let cookie = Cookie::build(("auth", "true")).path("/").permanent().http_only(true);
             return (jar.add(cookie), Redirect::to("/"));
         }
-    }
     (jar, Redirect::to("/login"))
 }
 
@@ -642,14 +641,12 @@ async fn search_media(State(state): State<AppState>, Query(params): Query<Search
     let mut query = params.q.clone();
     let mut year = None;
     let re = regex::Regex::new(r"\s+(\d{4})$").unwrap();
-    if let Some(caps) = re.captures(&params.q) {
-        if let Some(y_match) = caps.get(1) {
-            if let Ok(y) = y_match.as_str().parse::<u32>() {
+    if let Some(caps) = re.captures(&params.q)
+        && let Some(y_match) = caps.get(1)
+            && let Ok(y) = y_match.as_str().parse::<u32>() {
                 year = Some(y);
                 query = re.replace(&params.q, "").to_string();
             }
-        }
-    }
     let mut movies = state.tmdb.search_movie(&query, year).await.unwrap_or_default();
     let mut tv = state.tmdb.search_tv(&query, year).await.unwrap_or_default();
     for m in &mut movies { m.media_type = Some("movie".to_string()); }
@@ -658,7 +655,7 @@ async fn search_media(State(state): State<AppState>, Query(params): Query<Search
 
     let tracked = db::get_tracked_shows(&state.pool).await.unwrap_or_default();
     let disapproved = db::get_disapproved_ids(&state.pool).await.unwrap_or_default();
-    let tracked_ids: std::collections::HashSet<_> = tracked.into_iter().map(|s| s.tmdb_id as i64).collect();
+    let tracked_ids: std::collections::HashSet<_> = tracked.into_iter().map(|s| s.tmdb_id).collect();
     
     movies.retain(|m| !tracked_ids.contains(&(m.id as i64)) && !disapproved.contains(&(m.id as i64)));
 
@@ -678,7 +675,7 @@ async fn semantic_search(State(state): State<AppState>, Json(req): Json<Semantic
         let mut seen_ids = std::collections::HashSet::new();
 
         let tracked_ids = db::get_tracked_shows(&state.pool).await.unwrap_or_default()
-            .into_iter().map(|s| s.tmdb_id as i64).collect::<std::collections::HashSet<_>>();
+            .into_iter().map(|s| s.tmdb_id).collect::<std::collections::HashSet<_>>();
         let disapproved = db::get_disapproved_ids(&state.pool).await.unwrap_or_default();
 
         for title in titles_str.split(',') {
@@ -687,16 +684,14 @@ async fn semantic_search(State(state): State<AppState>, Json(req): Json<Semantic
             let movies = state.tmdb.search_movie(t, None).await.unwrap_or_default();
             let tv = state.tmdb.search_tv(t, None).await.unwrap_or_default();
             
-            if let Some(mut m) = movies.into_iter().next() { 
-                if !tracked_ids.contains(&(m.id as i64)) && !disapproved.contains(&(m.id as i64)) && seen_ids.insert(m.id) { 
+            if let Some(mut m) = movies.into_iter().next() 
+                && !tracked_ids.contains(&(m.id as i64)) && !disapproved.contains(&(m.id as i64)) && seen_ids.insert(m.id) { 
                     m.media_type = Some("movie".to_string()); all_results.push(m); 
-                } 
-            }
-            if let Some(mut t) = tv.into_iter().next() { 
-                if !tracked_ids.contains(&(t.id as i64)) && !disapproved.contains(&(t.id as i64)) && seen_ids.insert(t.id) { 
+                }
+            if let Some(mut t) = tv.into_iter().next() 
+                && !tracked_ids.contains(&(t.id as i64)) && !disapproved.contains(&(t.id as i64)) && seen_ids.insert(t.id) { 
                     t.media_type = Some("tv".to_string()); all_results.push(t); 
-                } 
-            }
+                }
         }
         return Json(all_results);
     }
@@ -712,7 +707,7 @@ async fn get_upcoming(State(state): State<AppState>) -> Json<Vec<crate::integrat
 
     let tracked = db::get_tracked_shows(&state.pool).await.unwrap_or_default();
     let disapproved = db::get_disapproved_ids(&state.pool).await.unwrap_or_default();
-    let tracked_ids: std::collections::HashSet<_> = tracked.into_iter().map(|s| s.tmdb_id as i64).collect();
+    let tracked_ids: std::collections::HashSet<_> = tracked.into_iter().map(|s| s.tmdb_id).collect();
     
     results.retain(|m| !tracked_ids.contains(&(m.id as i64)) && !disapproved.contains(&(m.id as i64)));
 
@@ -767,11 +762,10 @@ struct MatchRequest { tmdb_id: u32, title: String, poster_path: Option<String>, 
 async fn match_media(State(state): State<AppState>, Path(id): Path<i64>, Json(req): Json<MatchRequest>) -> Json<bool> {
     let item = match db::get_item_by_id(&state.pool, id).await { Ok(Some(i)) => i, _ => return Json(false) };
     let mut ids = vec![id];
-    if req.apply_to_all {
-        if let Ok(others) = db::get_items_by_title(&state.pool, &item.title).await {
+    if req.apply_to_all
+        && let Ok(others) = db::get_items_by_title(&state.pool, &item.title).await {
             for o in others { if o.id != id { ids.push(o.id); } }
         }
-    }
     for tid in ids {
         let _ = db::insert_manual_match(&state.pool, &item.title, req.tmdb_id, &req.title, req.poster_path.clone()).await;
         let _ = db::manual_match_item(&state.pool, tid, req.tmdb_id, &req.title, req.poster_path.clone()).await;
@@ -805,14 +799,13 @@ async fn manual_search_episode(State(state): State<AppState>, Path(id): Path<i64
             use sqlx::Row;
             if let Some(r) = rows.first() {
                 let q = format!("{} S{:02}E{:02}", r.get::<String, _>("show_title"), r.get::<i64, _>("season"), r.get::<i64, _>("episode"));
-                if let Ok(res) = indexer.search(&q).await {
-                    if let Some(b) = res.first() {
+                if let Ok(res) = indexer.search(&q).await
+                    && let Some(b) = res.first() {
                         let ing = std::fs::canonicalize("./ingest").unwrap_or_else(|_| std::path::PathBuf::from("./ingest"));
                         if qbit.add_torrent_url(&b.link, Some(&ing.to_string_lossy())).await.is_ok() {
                             let _ = db::update_episode_status(&pool, id, "downloading").await;
                         }
                     }
-                }
             }
         }
     });
@@ -820,9 +813,8 @@ async fn manual_search_episode(State(state): State<AppState>, Path(id): Path<i64
 }
 
 async fn get_torrents() -> Json<Vec<TorrentInfo>> {
-    if let Ok(qbit) = crate::integrations::torrent::QBittorrentClient::new() {
-        if let Ok(_) = qbit.login().await { return Json(qbit.get_torrents().await.unwrap_or_default()); }
-    }
+    if let Ok(qbit) = crate::integrations::torrent::QBittorrentClient::new()
+        && let Ok(_) = qbit.login().await { return Json(qbit.get_torrents().await.unwrap_or_default()); }
     Json(vec![])
 }
 
@@ -879,7 +871,7 @@ async fn search_by_genre(State(state): State<AppState>, Query(params): Query<Gen
 
         let tracked = db::get_tracked_shows(&state.pool).await.unwrap_or_default();
         let disapproved = db::get_disapproved_ids(&state.pool).await.unwrap_or_default();
-        let tracked_ids: std::collections::HashSet<_> = tracked.into_iter().map(|s| s.tmdb_id as i64).collect();
+        let tracked_ids: std::collections::HashSet<_> = tracked.into_iter().map(|s| s.tmdb_id).collect();
         
         results.retain(|m| !tracked_ids.contains(&(m.id as i64)) && !disapproved.contains(&(m.id as i64)));
 
@@ -893,13 +885,11 @@ struct ActivityItem { id: String, title: String, status: String, progress: f32, 
 
 async fn get_activity(State(state): State<AppState>) -> Json<Vec<ActivityItem>> {
     let mut activity = Vec::new();
-    if let Ok(qbit) = crate::integrations::torrent::QBittorrentClient::new() {
-        if qbit.login().await.is_ok() {
-            if let Ok(torrents) = qbit.get_torrents().await {
+    if let Ok(qbit) = crate::integrations::torrent::QBittorrentClient::new()
+        && qbit.login().await.is_ok()
+            && let Ok(torrents) = qbit.get_torrents().await {
                 for t in torrents { activity.push(ActivityItem { id: t.hash.clone(), title: t.name.clone(), status: "Downloading".to_string(), progress: t.progress, media_type: "unknown".to_string(), source: "tracked".to_string() }); }
             }
-        }
-    }
     let items = sqlx::query_as::<_, MediaItem>("SELECT * FROM media_items WHERE status != 'completed'").fetch_all(&state.pool).await.unwrap_or_default();
     for i in items {
         if activity.iter().any(|a| i.original_filename.contains(&a.title) || a.title.contains(&i.original_filename)) { continue; }
@@ -918,13 +908,12 @@ async fn get_activity(State(state): State<AppState>) -> Json<Vec<ActivityItem>> 
 
 async fn trigger_ingest(State(state): State<AppState>) -> Json<bool> {
     let pool = state.pool.clone(); let tmdb = state.tmdb.clone(); let ollama = state.ollama.clone();
-    if let Ok(qbit) = crate::integrations::torrent::QBittorrentClient::new() {
-        if qbit.login().await.is_ok() {
+    if let Ok(qbit) = crate::integrations::torrent::QBittorrentClient::new()
+        && qbit.login().await.is_ok() {
             let qbit_arc = Arc::new(qbit);
             tokio::spawn(async move { let _ = crate::scan_ingest_folder(pool, tmdb, ollama, qbit_arc).await; });
             return Json(true);
         }
-    }
     Json(false)
 }
 
@@ -1008,25 +997,23 @@ async fn download_torrent(State(state): State<AppState>, Json(req): Json<Downloa
     info!("Manual download requested for: {}", req.title);
     let result = async {
         let qbit = crate::integrations::torrent::QBittorrentClient::new()?;
-        let _ = qbit.login().await?;
+        qbit.login().await?;
         let ing = std::fs::canonicalize("./ingest").unwrap_or_else(|_| std::path::PathBuf::from("./ingest"));
         qbit.add_torrent_url(&req.link, Some(&ing.to_string_lossy())).await?;
         
         if let Some(eid) = req.episode_id {
             let _ = db::update_episode_status(&state.pool, eid, "downloading").await;
-            if let Ok(rows) = sqlx::query("SELECT s.tmdb_id, s.media_type, s.id as sid FROM episodes e JOIN tracked_shows s ON e.show_id = s.id WHERE e.id = ?").bind(eid).fetch_all(&state.pool).await {
-                if let Some(r) = rows.first() {
+            if let Ok(rows) = sqlx::query("SELECT s.tmdb_id, s.media_type, s.id as sid FROM episodes e JOIN tracked_shows s ON e.show_id = s.id WHERE e.id = ?").bind(eid).fetch_all(&state.pool).await
+                && let Some(r) = rows.first() {
                     use sqlx::Row;
                     let _ = db::insert_pending_download(&state.pool, &req.title, Some(r.get::<i64, _>("sid")), Some(eid), r.get::<i64, _>("tmdb_id") as u32, &r.get::<String, _>("media_type"), None).await;
                 }
-            }
         } else if let Some(sid) = req.show_id {
             let _ = db::update_tracked_show_status(&state.pool, sid, "downloading").await;
-            if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
-                if let Some(s) = tracked.iter().find(|t| t.id == sid) {
+            if let Ok(tracked) = db::get_tracked_shows(&state.pool).await
+                && let Some(s) = tracked.iter().find(|t| t.id == sid) {
                     let _ = db::insert_pending_download(&state.pool, &req.title, Some(sid), None, s.tmdb_id as u32, &s.media_type, None).await;
                 }
-            }
         }
         Ok::<(), anyhow::Error>(())
     }.await;
@@ -1046,7 +1033,7 @@ struct RecommendationMedia { #[serde(flatten)] media: crate::integrations::tmdb:
 async fn get_recommendations(State(state): State<AppState>) -> Json<Vec<RecommendationMedia>> {
     use rand::seq::SliceRandom;
     let tracked_shows = db::get_tracked_shows(&state.pool).await.unwrap_or_default();
-    let tracked_ids: std::collections::HashSet<_> = tracked_shows.iter().map(|s| s.tmdb_id as i64).collect();
+    let tracked_ids: std::collections::HashSet<_> = tracked_shows.iter().map(|s| s.tmdb_id).collect();
     let disapproved = db::get_disapproved_ids(&state.pool).await.unwrap_or_default();
     let votes = sqlx::query("SELECT tmdb_id, vote FROM recommendation_feedback").fetch_all(&state.pool).await.unwrap_or_default();
     use sqlx::Row;
@@ -1057,7 +1044,7 @@ async fn get_recommendations(State(state): State<AppState>) -> Json<Vec<Recommen
         let mut rng = rand::thread_rng();
         let mut high_rated = tracked_shows.iter().filter(|i| i.rating >= 4).collect::<Vec<_>>();
         high_rated.shuffle(&mut rng);
-        for item in high_rated.iter().take(5) { seeds.push((item.tmdb_id as i64, item.media_type.clone())); }
+        for item in high_rated.iter().take(5) { seeds.push((item.tmdb_id, item.media_type.clone())); }
         let mut app_shuffled = approved_ids.clone();
         app_shuffled.shuffle(&mut rng);
         for app in app_shuffled { if !seeds.iter().any(|s| s.0 == app.0) { seeds.push(app); } }
@@ -1066,7 +1053,7 @@ async fn get_recommendations(State(state): State<AppState>) -> Json<Vec<Recommen
     let mut raw_recs = Vec::new();
     for (tmdb_id, media_type) in seeds.iter().take(10) {
         if media_type == "movie" { if let Ok(results) = state.tmdb.get_movie_recommendations(*tmdb_id as u32).await { for mut m in results { m.media_type = Some("movie".to_string()); raw_recs.push(m); } } }
-        else { if let Ok(results) = state.tmdb.get_tv_recommendations(*tmdb_id as u32).await { for mut m in results { m.media_type = Some("tv".to_string()); raw_recs.push(m); } } }
+        else if let Ok(results) = state.tmdb.get_tv_recommendations(*tmdb_id as u32).await { for mut m in results { m.media_type = Some("tv".to_string()); raw_recs.push(m); } }
     }
     let mut seen = std::collections::HashSet::new();
     raw_recs.retain(|m| seen.insert(m.id) && !tracked_ids.contains(&(m.id as i64)) && !disapproved.contains(&(m.id as i64)));
@@ -1100,12 +1087,12 @@ async fn get_preference_chips(State(state): State<AppState>) -> Json<Vec<String>
 }
 
 async fn get_trailers(State(state): State<AppState>, Path(id): Path<i64>) -> Json<Vec<crate::integrations::tmdb::TmdbVideo>> {
-    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await { if let Some(s) = tracked.iter().find(|t| t.id == id) { if let Ok(videos) = state.tmdb.get_videos(s.tmdb_id as u32, s.media_type == "tv").await { let trailers: Vec<_> = videos.into_iter().filter(|v| v.r#type == "Trailer").collect(); return Json(trailers); } } }
+    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await && let Some(s) = tracked.iter().find(|t| t.id == id) && let Ok(videos) = state.tmdb.get_videos(s.tmdb_id as u32, s.media_type == "tv").await { let trailers: Vec<_> = videos.into_iter().filter(|v| v.r#type == "Trailer").collect(); return Json(trailers); }
     Json(vec![])
 }
 
 async fn get_credits(State(state): State<AppState>, Path(id): Path<i64>) -> Json<crate::integrations::tmdb::TmdbCredits> {
-    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await { if let Some(s) = tracked.iter().find(|t| t.id == id) { if let Ok(credits) = state.tmdb.get_credits(s.tmdb_id as u32, s.media_type == "tv").await { return Json(credits); } } }
+    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await && let Some(s) = tracked.iter().find(|t| t.id == id) && let Ok(credits) = state.tmdb.get_credits(s.tmdb_id as u32, s.media_type == "tv").await { return Json(credits); }
     Json(crate::integrations::tmdb::TmdbCredits { cast: vec![] })
 }
 
@@ -1119,9 +1106,9 @@ async fn get_external_trailers(State(state): State<AppState>, Path((media_type, 
 async fn get_external_credits(State(state): State<AppState>, Path((media_type, id)): Path<(String, u32)>) -> Json<crate::integrations::tmdb::TmdbCredits> { if let Ok(credits) = state.tmdb.get_credits(id, media_type == "tv").await { return Json(credits); } Json(crate::integrations::tmdb::TmdbCredits { cast: vec![] }) }
 
 async fn fetch_subtitles_for_tracked(State(state): State<AppState>, Path(id): Path<i64>) -> Json<bool> {
-    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await {
-        if let Some(s) = tracked.iter().find(|t| t.id == id) {
-            if let Ok(sub_client) = crate::integrations::subtitles::SubtitleClient::new() {
+    if let Ok(tracked) = db::get_tracked_shows(&state.pool).await
+        && let Some(s) = tracked.iter().find(|t| t.id == id)
+            && let Ok(sub_client) = crate::integrations::subtitles::SubtitleClient::new() {
                 let lib_dir = std::env::var("NEURARR_LIBRARY_DIR").unwrap_or_else(|_| "./library".to_string());
                 let mut dest = std::path::PathBuf::from(&lib_dir);
                 if s.media_type == "tv" { dest.push("TV"); } else { dest.push("Movies"); }
@@ -1129,8 +1116,6 @@ async fn fetch_subtitles_for_tracked(State(state): State<AppState>, Path(id): Pa
                 let _ = tokio::fs::create_dir_all(dest.parent().unwrap()).await;
                 if sub_client.download_subtitles(&s.title, &dest).await.is_ok() { return Json(true); }
             }
-        }
-    }
     Json(false)
 }
 
@@ -1141,13 +1126,12 @@ async fn trigger_update() -> Json<bool> {
 
 async fn serve_logo() -> impl IntoResponse {
     let path = std::path::Path::new("assets/logo.png");
-    if path.exists() {
-        if let Ok(content) = tokio::fs::read(path).await {
+    if path.exists()
+        && let Ok(content) = tokio::fs::read(path).await {
             return Response::builder()
                 .header("Content-Type", "image/png")
                 .body(axum::body::Body::from(content))
                 .unwrap();
         }
-    }
     StatusCode::NOT_FOUND.into_response()
 }

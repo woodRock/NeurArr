@@ -65,15 +65,16 @@ impl Parser {
         if !all_matches.is_empty() {
             // Logic: A year is only a "split point" if it's the LAST year in the filename.
             // Other tags (resolution, TV) are always split points.
+            let year_re_check = Regex::new(r"(19|20)\d{2}").unwrap();
             
             for mat in &all_matches {
                 let tag_text = mat.as_str().to_lowercase();
-                let is_year = Regex::new(r"(19|20)\d{2}").unwrap().is_match(&tag_text);
+                let is_year = year_re_check.is_match(&tag_text);
                 
                 if is_year {
                     // Check if there's another year after this one
                     let remaining_text = &filename[mat.end()..];
-                    let has_later_year = Regex::new(r"(19|20)\d{2}").unwrap().is_match(remaining_text);
+                    let has_later_year = year_re_check.is_match(remaining_text);
                     
                     if !has_later_year {
                         split_point = mat.start();

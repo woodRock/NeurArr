@@ -148,7 +148,7 @@ fn test_quality_filtering_logic() {
     
     // Profile: Max 1080p, No x265
     let max_res_1080 = "1080p";
-    let must_not_contain = vec!["x265", "cam"];
+    let must_not_contain = ["x265", "cam"];
     
     let is_too_high_res = max_res_1080 == "1080p" && torrent_title.contains("2160p");
     let has_forbidden = must_not_contain.iter().any(|word| torrent_title.contains(word));

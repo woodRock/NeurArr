@@ -34,17 +34,19 @@ pub mod auth {
     }
 }
 
+#[allow(dead_code)]
 pub struct Renamer {
     pub library_dir: String,
 }
 
+#[allow(dead_code)]
 impl Renamer {
     pub fn new(library_dir: String) -> Self {
         Self { library_dir }
     }
 
     pub fn sanitize_filename(name: &str) -> String {
-        name.replace(|c: char| matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'), "")
+        name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "")
             .trim()
             .to_string()
     }
@@ -89,7 +91,7 @@ impl Renamer {
         info!("Renamer: Moving {} to {}", path.display(), dest.display());
 
         // Try rename first (fast, same device)
-        if let Err(_) = tokio::fs::rename(path, &dest).await {
+        if tokio::fs::rename(path, &dest).await.is_err() {
             // Fallback to copy + delete (cross-device)
             tokio::fs::copy(path, &dest).await?;
             tokio::fs::remove_file(path).await?;
