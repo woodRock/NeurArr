@@ -44,7 +44,7 @@ pub struct IndexerClient {
 
 impl IndexerClient {
     pub fn new() -> Result<Self> {
-        let base_url = env::var("INDEXER_URL").unwrap_or_else(|_| "http://localhost:9117/api/v2.0/indexers/all/results/torznab/".to_string());
+        let base_url = env::var("INDEXER_URL").unwrap_or_else(|_| "http://localhost:9117/api/v2.0/indexers/all/results".to_string());
         let api_key = env::var("INDEXER_API_KEY").unwrap_or_else(|_| "".to_string());
         
         Ok(Self {
