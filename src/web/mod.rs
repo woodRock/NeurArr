@@ -36,6 +36,7 @@ struct AppState {
     pool: SqlitePool,
     tmdb: TmdbClient,
     ollama: Arc<crate::llm::OllamaClient>,
+    qbit: Arc<crate::integrations::torrent::QBittorrentClient>,
     sys: Arc<StdMutex<System>>,
     log_tx: tokio::sync::broadcast::Sender<String>,
     is_scanning: Arc<std::sync::atomic::AtomicBool>,
@@ -50,12 +51,19 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         info!("Ollama client initialized in degraded mode (missing config)");
         crate::llm::OllamaClient::new().unwrap()
     }));
+    let qbit = Arc::new(crate::integrations::torrent::QBittorrentClient::new().unwrap_or_else(|_| {
+        info!("qBittorrent client initialized in degraded mode (missing config)");
+        crate::integrations::torrent::QBittorrentClient::new().unwrap()
+    }));
+    let _ = qbit.login().await;
+
     let mut sys = System::new_all();
     sys.refresh_all();
     let state = AppState { 
         pool, 
         tmdb, 
         ollama,
+        qbit,
         sys: Arc::new(StdMutex::new(sys)),
         log_tx,
         is_scanning: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -791,9 +799,9 @@ async fn set_tracked_status(State(state): State<AppState>, Path(id): Path<i64>, 
 
 async fn manual_search_episode(State(state): State<AppState>, Path(id): Path<i64>) -> Json<bool> {
     let pool = state.pool.clone();
+    let qbit = state.qbit.clone();
     tokio::spawn(async move {
         let indexer = crate::integrations::indexer::IndexerClient::new().unwrap();
-        let qbit = crate::integrations::torrent::QBittorrentClient::new().unwrap();
         let _ = qbit.login().await;
         if let Ok(rows) = sqlx::query("SELECT e.*, s.title as show_title FROM episodes e JOIN tracked_shows s ON e.show_id = s.id WHERE e.id = ?").bind(id).fetch_all(&pool).await {
             use sqlx::Row;
@@ -812,10 +820,9 @@ async fn manual_search_episode(State(state): State<AppState>, Path(id): Path<i64
     Json(true)
 }
 
-async fn get_torrents() -> Json<Vec<TorrentInfo>> {
-    if let Ok(qbit) = crate::integrations::torrent::QBittorrentClient::new()
-        && let Ok(_) = qbit.login().await { return Json(qbit.get_torrents().await.unwrap_or_default()); }
-    Json(vec![])
+async fn get_torrents(State(state): State<AppState>) -> Json<Vec<TorrentInfo>> {
+    let _ = state.qbit.login().await;
+    Json(state.qbit.get_torrents().await.unwrap_or_default())
 }
 
 async fn get_sysinfo(State(state): State<AppState>) -> Json<SysInfo> {
@@ -885,11 +892,10 @@ struct ActivityItem { id: String, title: String, status: String, progress: f32, 
 
 async fn get_activity(State(state): State<AppState>) -> Json<Vec<ActivityItem>> {
     let mut activity = Vec::new();
-    if let Ok(qbit) = crate::integrations::torrent::QBittorrentClient::new()
-        && qbit.login().await.is_ok()
-            && let Ok(torrents) = qbit.get_torrents().await {
-                for t in torrents { activity.push(ActivityItem { id: t.hash.clone(), title: t.name.clone(), status: "Downloading".to_string(), progress: t.progress, media_type: "unknown".to_string(), source: "tracked".to_string() }); }
-            }
+    let _ = state.qbit.login().await;
+    if let Ok(torrents) = state.qbit.get_torrents().await {
+        for t in torrents { activity.push(ActivityItem { id: t.hash.clone(), title: t.name.clone(), status: "Downloading".to_string(), progress: t.progress, media_type: "unknown".to_string(), source: "tracked".to_string() }); }
+    }
     let items = sqlx::query_as::<_, MediaItem>("SELECT * FROM media_items WHERE status != 'completed'").fetch_all(&state.pool).await.unwrap_or_default();
     for i in items {
         if activity.iter().any(|a| i.original_filename.contains(&a.title) || a.title.contains(&i.original_filename)) { continue; }
@@ -908,13 +914,10 @@ async fn get_activity(State(state): State<AppState>) -> Json<Vec<ActivityItem>> 
 
 async fn trigger_ingest(State(state): State<AppState>) -> Json<bool> {
     let pool = state.pool.clone(); let tmdb = state.tmdb.clone(); let ollama = state.ollama.clone();
-    if let Ok(qbit) = crate::integrations::torrent::QBittorrentClient::new()
-        && qbit.login().await.is_ok() {
-            let qbit_arc = Arc::new(qbit);
-            tokio::spawn(async move { let _ = crate::scan_ingest_folder(pool, tmdb, ollama, qbit_arc).await; });
-            return Json(true);
-        }
-    Json(false)
+    let qbit = state.qbit.clone();
+    let _ = qbit.login().await;
+    tokio::spawn(async move { let _ = crate::scan_ingest_folder(pool, tmdb, ollama, qbit).await; });
+    Json(true)
 }
 
 async fn get_config() -> Json<Vec<ConfigItem>> {
@@ -996,7 +999,7 @@ struct DownloadRequest { link: String, title: String, episode_id: Option<i64>, s
 async fn download_torrent(State(state): State<AppState>, Json(req): Json<DownloadRequest>) -> Json<bool> {
     info!("Manual download requested for: {}", req.title);
     let result = async {
-        let qbit = crate::integrations::torrent::QBittorrentClient::new()?;
+        let qbit = state.qbit.clone();
         qbit.login().await?;
         let ing = std::fs::canonicalize("./ingest").unwrap_or_else(|_| std::path::PathBuf::from("./ingest"));
         qbit.add_torrent_url(&req.link, Some(&ing.to_string_lossy())).await?;

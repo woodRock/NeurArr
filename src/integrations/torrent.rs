@@ -3,6 +3,7 @@ use reqwest::{Client, cookie::Jar};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::info;
 
 #[derive(Serialize)]
@@ -15,6 +16,7 @@ struct LoginRequest {
 pub struct QBittorrentClient {
     client: Client,
     base_url: String,
+    is_logged_in: AtomicBool,
 }
 
 impl QBittorrentClient {
@@ -26,10 +28,18 @@ impl QBittorrentClient {
             .cookie_provider(jar)
             .build()?;
 
-        Ok(Self { client, base_url })
+        Ok(Self { 
+            client, 
+            base_url,
+            is_logged_in: AtomicBool::new(false),
+        })
     }
 
     pub async fn login(&self) -> Result<()> {
+        if self.is_logged_in.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
         let username = env::var("QBITTORRENT_USER").unwrap_or_else(|_| "admin".to_string());
         let password = env::var("QBITTORRENT_PASS").unwrap_or_else(|_| "adminadmin".to_string());
 
@@ -44,6 +54,7 @@ impl QBittorrentClient {
 
         if response.status().is_success() {
             info!("Successfully logged into qBittorrent");
+            self.is_logged_in.store(true, Ordering::SeqCst);
             Ok(())
         } else {
             anyhow::bail!("Failed to login to qBittorrent: {}", response.status());
