@@ -282,13 +282,11 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
 
     info!("Automation: Starting cycle (Target: {:?})...", target_show_id);
     
-    // Ensure we are logged in
     if let Err(e) = qbit.login().await {
         error!("Automation: Failed to log into qBittorrent: {:?}", e);
         return Ok(());
     }
 
-    // 1. Sync metadata for all TV shows (only if no target, or target matches)
     if let Ok(tracked) = db::get_tracked_shows(&pool).await {
         for show in tracked { 
             if let Some(tid) = target_show_id { if show.id != tid { continue; } }
@@ -296,7 +294,6 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
         }
     }
 
-    // 2. Check for Season Packs
     if let Ok(needed_seasons) = db::get_needed_seasons(&pool).await {
         for (season_num, show) in needed_seasons {
             if let Some(tid) = target_show_id { if show.id != tid { continue; } }
@@ -327,7 +324,21 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
                         t.contains(&s_code.to_lowercase()) && (t.contains("complete") || t.contains("season") || !t.contains("e0"))
                     }).collect();
                     for best in filtered {
-                        if let Ok(true) = ollama.verify_torrent_match(&show.title, &best.title).await {
+                        let target_norm = show.title.to_lowercase().replace(|c: char| !c.is_alphanumeric() && !c.is_whitespace(), "");
+                        let torrent_norm = best.title.to_lowercase().replace(|c: char| !c.is_alphanumeric() && !c.is_whitespace(), "");
+                        let target_words: Vec<_> = target_norm.split_whitespace().collect();
+                        let is_string_match = target_words.iter().all(|w| torrent_norm.contains(w));
+                        
+                        let verified = if is_string_match {
+                            info!("Automation [LOCAL]: High-confidence match for '{}' - Skipping AI", best.title);
+                            true
+                        } else {
+                            info!("Automation [AI]: Fuzzy match suspected for '{}', verifying...", best.title);
+                            ollama.verify_torrent_match(&show.title, &best.title).await.unwrap_or(false)
+                        };
+
+                        if verified {
+                            info!("Automation: Confirmed and adding pack: {}", best.title);
                             let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
                             if qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
                                 let _ = db::update_season_status(&pool, show.id, season_num, "downloading").await;
@@ -341,7 +352,6 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
         }
     }
 
-    // 3. Check for Individual Episodes
     if let Ok(wanted_eps) = db::get_wanted_episodes(&pool).await {
         for (ep, show) in wanted_eps {
             if let Some(tid) = target_show_id { if show.id != tid { continue; } }
@@ -377,7 +387,21 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
                         true
                     }).collect();
                     for best in filtered {
-                        if let Ok(true) = ollama.verify_torrent_match(&show.title, &best.title).await {
+                        let target_norm = show.title.to_lowercase().replace(|c: char| !c.is_alphanumeric() && !c.is_whitespace(), "");
+                        let torrent_norm = best.title.to_lowercase().replace(|c: char| !c.is_alphanumeric() && !c.is_whitespace(), "");
+                        let target_words: Vec<_> = target_norm.split_whitespace().collect();
+                        let is_string_match = target_words.iter().all(|w| torrent_norm.contains(w));
+
+                        let verified = if is_string_match {
+                            info!("Automation [LOCAL]: High-confidence match for '{}' - Skipping AI", best.title);
+                            true
+                        } else {
+                            info!("Automation [AI]: Fuzzy match suspected for '{}', verifying...", best.title);
+                            ollama.verify_torrent_match(&show.title, &best.title).await.unwrap_or(false)
+                        };
+
+                        if verified {
+                            info!("Automation: Confirmed and adding episode: {}", best.title);
                             let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
                             if qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
                                 let _ = db::update_episode_status(&pool, ep.id, "downloading").await;
@@ -391,7 +415,6 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
         }
     }
 
-    // 4. Check for Wanted Movies
     if let Ok(wanted_movies) = db::get_wanted_movies(&pool).await {
         for movie in wanted_movies {
             if let Some(tid) = target_show_id { if movie.id != tid { continue; } }
@@ -426,7 +449,21 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
                         !t.contains("soundtrack") && !t.contains("ost")
                     }).collect();
                     for best in filtered {
-                        if let Ok(true) = ollama.verify_torrent_match(&movie.title, &best.title).await {
+                        let target_norm = movie.title.to_lowercase().replace(|c: char| !c.is_alphanumeric() && !c.is_whitespace(), "");
+                        let torrent_norm = best.title.to_lowercase().replace(|c: char| !c.is_alphanumeric() && !c.is_whitespace(), "");
+                        let target_words: Vec<_> = target_norm.split_whitespace().collect();
+                        let is_string_match = target_words.iter().all(|w| torrent_norm.contains(w));
+
+                        let verified = if is_string_match {
+                            info!("Automation [LOCAL]: High-confidence match for '{}' - Skipping AI", best.title);
+                            true
+                        } else {
+                            info!("Automation [AI]: Fuzzy match suspected for '{}', verifying...", best.title);
+                            ollama.verify_torrent_match(&movie.title, &best.title).await.unwrap_or(false)
+                        };
+
+                        if verified {
+                            info!("Automation: Confirmed and adding movie: {}", best.title);
                             let ingest = std::fs::canonicalize("./ingest").unwrap_or_else(|_| PathBuf::from("./ingest"));
                             if qbit.add_torrent_url(&best.link, Some(&ingest.to_string_lossy())).await.is_ok() {
                                 let _ = db::update_tracked_show_status(&pool, movie.id, "downloading").await;
