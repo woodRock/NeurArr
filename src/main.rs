@@ -515,7 +515,23 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
     Ok(())
 }
 
+use std::fs::OpenOptions;
+
+fn is_file_locked(path: &PathBuf) -> bool {
+    // Try to open the file in append mode. If it fails, it's likely being written to.
+    // Note: This is a common heuristic on Windows/Unix for finding exclusive locks.
+    match OpenOptions::new().append(true).open(path) {
+        Ok(_) => false,
+        Err(_) => true,
+    }
+}
+
 async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, _qbit: Arc<QBittorrentClient>) -> Result<()> {
+    if is_file_locked(&path) {
+        info!("Ingest: Skipping {} (File is currently locked/writing)", path.display());
+        return Ok(());
+    }
+
     let filename = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
     if filename.is_empty() { return Ok(()); }
 
