@@ -1,5 +1,5 @@
 use notify_rust::Notification;
-use tracing::error;
+use tracing::{error, info};
 
 #[allow(dead_code)]
 pub fn send_notification(title: &str, body: &str) {
@@ -76,7 +76,14 @@ impl Renamer {
             dest.push(format!("{}.{}", final_title, ext));
         }
 
-        tokio::fs::rename(path, &dest).await?;
+        info!("Renamer: Moving {} to {}", path.display(), dest.display());
+
+        // Try rename first (fast, same device)
+        if let Err(_) = tokio::fs::rename(path, &dest).await {
+            // Fallback to copy + delete (cross-device)
+            tokio::fs::copy(path, &dest).await?;
+            tokio::fs::remove_file(path).await?;
+        }
         Ok(())
     }
 }
