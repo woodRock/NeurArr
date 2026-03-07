@@ -37,11 +37,11 @@ impl Scanner {
         self.event_rx.recv().await
     }
 
-    pub async fn scan(&mut self, pool: sqlx::SqlitePool, tmdb: crate::integrations::tmdb::TmdbClient, ollama: std::sync::Arc<crate::llm::OllamaClient>, qbit: std::sync::Arc<crate::integrations::torrent::QBittorrentClient>, path: PathBuf) -> Result<()> {
+    pub async fn scan(&mut self, pool: sqlx::SqlitePool, tmdb: crate::integrations::tmdb::TmdbClient, ollama: std::sync::Arc<crate::llm::OllamaClient>, qbit: std::sync::Arc<crate::integrations::torrent::QBittorrentClient>, plex: std::sync::Arc<crate::integrations::plex::PlexClient>, path: PathBuf) -> Result<()> {
         info!("Scanning ingest directory: {:?}", path);
         for entry in walkdir::WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
             if entry.file_type().is_file() {
-                let _ = crate::process_file(entry.path().to_path_buf(), pool.clone(), tmdb.clone(), ollama.clone(), qbit.clone()).await;
+                let _ = crate::process_file(entry.path().to_path_buf(), pool.clone(), tmdb.clone(), ollama.clone(), qbit.clone(), plex.clone()).await;
             }
         }
         Ok(())

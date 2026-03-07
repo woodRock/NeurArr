@@ -37,6 +37,7 @@ struct AppState {
     tmdb: TmdbClient,
     ollama: Arc<crate::llm::OllamaClient>,
     qbit: Arc<crate::integrations::torrent::QBittorrentClient>,
+    plex: Arc<crate::integrations::plex::PlexClient>,
     sys: Arc<StdMutex<System>>,
     log_tx: tokio::sync::broadcast::Sender<String>,
     is_scanning: Arc<std::sync::atomic::AtomicBool>,
@@ -55,6 +56,10 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         info!("qBittorrent client initialized in degraded mode (missing config)");
         crate::integrations::torrent::QBittorrentClient::new().unwrap()
     }));
+    let plex = Arc::new(crate::integrations::plex::PlexClient::new().unwrap_or_else(|_| {
+        info!("Plex client initialized in degraded mode (missing config)");
+        crate::integrations::plex::PlexClient::new().unwrap()
+    }));
     let _ = qbit.login().await;
 
     let mut sys = System::new_all();
@@ -64,6 +69,7 @@ pub async fn start_web_server(pool: SqlitePool, log_tx: tokio::sync::broadcast::
         tmdb, 
         ollama,
         qbit,
+        plex,
         sys: Arc::new(StdMutex::new(sys)),
         log_tx,
         is_scanning: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -778,10 +784,11 @@ async fn match_media(State(state): State<AppState>, Path(id): Path<i64>, Json(re
         let _ = db::insert_manual_match(&state.pool, &item.title, req.tmdb_id, &req.title, req.poster_path.clone()).await;
         let _ = db::manual_match_item(&state.pool, tid, req.tmdb_id, &req.title, req.poster_path.clone()).await;
         let p = state.pool.clone(); let t = state.tmdb.clone(); let o = state.ollama.clone(); let mid = req.tmdb_id;
+        let pl = state.plex.clone();
         tokio::spawn(async move {
             if let Ok(Some(i)) = db::get_item_by_id(&p, tid).await {
                 let path = std::path::PathBuf::from("./ingest").join(&i.original_filename);
-                let _ = crate::run_pipeline(tid, path, p, t, o, Some(mid), None).await;
+                let _ = crate::run_pipeline(tid, path, p, t, o, pl, Some(mid), None).await;
             }
         });
     }
@@ -915,8 +922,9 @@ async fn get_activity(State(state): State<AppState>) -> Json<Vec<ActivityItem>> 
 async fn trigger_ingest(State(state): State<AppState>) -> Json<bool> {
     let pool = state.pool.clone(); let tmdb = state.tmdb.clone(); let ollama = state.ollama.clone();
     let qbit = state.qbit.clone();
+    let plex = state.plex.clone();
     let _ = qbit.login().await;
-    tokio::spawn(async move { let _ = crate::scan_ingest_folder(pool, tmdb, ollama, qbit).await; });
+    tokio::spawn(async move { let _ = crate::scan_ingest_folder(pool, tmdb, ollama, qbit, plex).await; });
     Json(true)
 }
 
@@ -924,6 +932,8 @@ async fn get_config() -> Json<Vec<ConfigItem>> {
     let keys = vec![
         ("TMDB_API_KEY", "TMDB API Key", "External Services"),
         ("OPENSUBTITLES_API_KEY", "OpenSubtitles API Key", "External Services"),
+        ("PLEX_BASE_URL", "Plex Base URL", "External Services"),
+        ("PLEX_TOKEN", "Plex Token", "External Services"),
         ("QBITTORRENT_URL", "qBittorrent URL", "Automation"),
         ("QBITTORRENT_USER", "qBittorrent User", "Automation"),
         ("QBITTORRENT_PASS", "qBittorrent Password", "Automation"),

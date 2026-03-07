@@ -11,6 +11,7 @@ use crate::db::init_db;
 use crate::integrations::tmdb::TmdbClient;
 use crate::integrations::torrent::QBittorrentClient;
 use crate::llm::OllamaClient;
+use crate::integrations::plex::PlexClient;
 use crate::parser::Parser;
 use crate::utils::Renamer;
 
@@ -469,10 +470,10 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
     Ok(())
 }
 
-pub async fn scan_ingest_folder(pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, _qbit: Arc<QBittorrentClient>) -> Result<()> {
+pub async fn scan_ingest_folder(pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, _qbit: Arc<QBittorrentClient>, plex: Arc<PlexClient>) -> Result<()> {
     let ingest_dir = env::var("NEURARR_INGEST_DIR").unwrap_or_else(|_| "./ingest".to_string());
     let mut scanner = Scanner::new()?;
-    scanner.scan(pool, tmdb, ollama, _qbit, PathBuf::from(ingest_dir)).await
+    scanner.scan(pool, tmdb, ollama, _qbit, plex, PathBuf::from(ingest_dir)).await
 }
 
 async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
@@ -489,12 +490,17 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
         info!("qBittorrent client initialized in degraded mode");
         QBittorrentClient::new().unwrap()
     }));
+    let plex = Arc::new(PlexClient::new().unwrap_or_else(|_| {
+        info!("Plex client initialized in degraded mode");
+        PlexClient::new().unwrap()
+    }));
     let _ = qbit.login().await;
 
     let scanner_pool = pool.clone();
     let scanner_tmdb = tmdb_client.clone();
     let scanner_ollama = ollama.clone();
     let scanner_qbit = qbit.clone();
+    let scanner_plex = plex.clone();
     let ingest_dir = env::var("NEURARR_INGEST_DIR").unwrap_or_else(|_| "./ingest".to_string());
     
     let ai_semaphore = Arc::new(Semaphore::new(1));
@@ -515,11 +521,12 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
                             let tmdb = scanner_tmdb.clone();
                             let ollama = scanner_ollama.clone();
                             let qbit_clone = scanner_qbit.clone();
+                            let plex_clone = scanner_plex.clone();
                             let registry_inner = processing_registry.clone();
                             let sem = ai_semaphore.clone();
                             tokio::spawn(async move {
                                 let _permit = sem.acquire().await.ok();
-                                let _ = crate::process_file(path_clone.clone(), pool, tmdb, ollama, qbit_clone).await;
+                                let _ = crate::process_file(path_clone.clone(), pool, tmdb, ollama, qbit_clone, plex_clone).await;
                                 registry_inner.lock().await.remove(&path_clone);
                             });
                         }
@@ -533,19 +540,21 @@ async fn run_daemon(log_tx: broadcast::Sender<String>) -> Result<()> {
     let initial_tmdb = tmdb_client.clone();
     let initial_ollama = ollama.clone();
     let initial_qbit = qbit.clone();
+    let initial_plex = plex.clone();
     tokio::spawn(async move {
-        let _ = scan_ingest_folder(initial_pool, initial_tmdb, initial_ollama, initial_qbit).await;
+        let _ = scan_ingest_folder(initial_pool, initial_tmdb, initial_ollama, initial_qbit, initial_plex).await;
     });
 
     let scheduler_pool = pool.clone();
     let scheduler_tmdb = tmdb_client.clone();
     let scheduler_ollama = ollama.clone();
     let scheduler_qbit = qbit.clone();
+    let scheduler_plex = plex.clone();
     
     tokio::spawn(async move {
         loop {
             let _ = run_automation_cycle(scheduler_pool.clone(), scheduler_tmdb.clone(), scheduler_ollama.clone(), scheduler_qbit.clone(), None).await;
-            let _ = scan_ingest_folder(scheduler_pool.clone(), scheduler_tmdb.clone(), scheduler_ollama.clone(), scheduler_qbit.clone()).await;
+            let _ = scan_ingest_folder(scheduler_pool.clone(), scheduler_tmdb.clone(), scheduler_ollama.clone(), scheduler_qbit.clone(), scheduler_plex.clone()).await;
             tokio::time::sleep(std::time::Duration::from_secs(1800)).await;
         }
     });
@@ -562,7 +571,7 @@ fn is_file_locked(path: &PathBuf) -> bool {
     OpenOptions::new().append(true).open(path).is_err()
 }
 
-async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, _qbit: Arc<QBittorrentClient>) -> Result<()> {
+async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, _qbit: Arc<QBittorrentClient>, plex: Arc<PlexClient>) -> Result<()> {
     if is_file_locked(&path) {
         info!("Ingest: Skipping {} (File is currently locked/writing)", path.display());
         return Ok(());
@@ -603,11 +612,12 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
                 }
             }
             let _ = tokio::fs::remove_dir_all(&path).await;
-        } else {
+            let _ = plex.refresh_library().await;
+            } else {
             let meta = Parser::parse_regex(filename);
             let item_id = db::insert_media_item(&pool, filename, &meta).await?;
-            run_pipeline(item_id, path, pool, tmdb, ollama, Some(pending.tmdb_id as u32), Some(pending.media_type.clone())).await?;
-        }
+            run_pipeline(item_id, path, pool, tmdb, ollama, plex, Some(pending.tmdb_id as u32), Some(pending.media_type.clone())).await?;
+            }
         return Ok(());
     }
 
@@ -657,12 +667,13 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
                 }
             }
             let _ = tokio::fs::remove_dir_all(&path).await;
+            let _ = plex.refresh_library().await;
         }
     } else if path.is_file() {
         if !["mkv", "mp4", "avi", "mov"].contains(&path.extension().and_then(|e| e.to_str()).unwrap_or("")) { return Ok(()); }
         let metadata = Parser::parse_regex(filename);
         let item_id = db::insert_media_item(&pool, filename, &metadata).await?;
-        if let Err(e) = run_pipeline(item_id, path.clone(), pool, tmdb, ollama, None, None).await {
+        if let Err(e) = run_pipeline(item_id, path.clone(), pool, tmdb, ollama, plex, None, None).await {
             error!("Ingest: Error processing {}: {:?}", filename, e);
             return Err(e);
         }
@@ -671,7 +682,7 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
     Ok(())
 }
 
-pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, force_tmdb_id: Option<u32>, force_media_type: Option<String>) -> Result<()> {
+pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, plex: Arc<PlexClient>, force_tmdb_id: Option<u32>, force_media_type: Option<String>) -> Result<()> {
     let filename = path.file_name().unwrap().to_str().unwrap();
     let metadata = Parser::parse_regex(filename);
     
@@ -758,6 +769,9 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
     let renamer = Renamer::new(env::var("NEURARR_LIBRARY_DIR")?);
     renamer.move_file(&path, &metadata, &final_title).await?;
     info!("Ingest: Successfully moved '{}'", final_title);
+
+    let _ = plex.refresh_library().await;
+
     Ok(())
 }
 
