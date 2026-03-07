@@ -590,7 +590,17 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
     if let Ok(Some(pending)) = db::get_pending_download(&pool, filename).await {
         info!("Ingest: Identified {} from pending (Stage: Fast)", filename);
         let details = if pending.media_type == "tv" { tmdb.get_tv_details(pending.tmdb_id as u32).await? } else { tmdb.get_movie_details(pending.tmdb_id as u32).await? };
-        let final_title = details.name.or(details.title).unwrap_or_else(|| "Unknown".to_string());
+        
+        let base_title = details.title.or(details.name).unwrap_or_else(|| "Unknown".to_string());
+        let year = details.release_date.as_deref().or(details.first_air_date.as_deref())
+            .and_then(|d| d.split('-').next())
+            .unwrap_or("0000");
+        
+        let final_title = if pending.media_type == "movie" {
+            format!("{} ({})", base_title, year)
+        } else {
+            base_title
+        };
 
         if path.is_dir() {
             for entry in WalkDir::new(&path).into_iter().filter_map(|e| e.ok()) {
@@ -628,7 +638,17 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
             let show_id = show.id;
             info!("Ingest: Identified directory pack '{}' (Stage: Local)", filename);
             let details = if metadata.season.is_some() { tmdb.get_tv_details(tmdb_id).await? } else { tmdb.get_movie_details(tmdb_id).await? };
-            let final_title = details.name.or(details.title).unwrap_or_else(|| "Unknown".to_string());
+            
+            let base_title = details.title.or(details.name).unwrap_or_else(|| "Unknown".to_string());
+            let year = details.release_date.as_deref().or(details.first_air_date.as_deref())
+                .and_then(|d| d.split('-').next())
+                .unwrap_or("0000");
+            
+            let final_title = if metadata.season.is_none() {
+                format!("{} ({})", base_title, year)
+            } else {
+                base_title
+            };
 
             for entry in WalkDir::new(&path).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_file() {
@@ -704,7 +724,19 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
         }
     };
     let details = if metadata.season.is_some() { tmdb.get_tv_details(tmdb_id).await? } else { tmdb.get_movie_details(tmdb_id).await? };
-    let final_title = details.name.or(details.title).unwrap_or_else(|| "Unknown".to_string());
+    
+    // Prioritize title/name but append year for movies to prevent generic name collisions (like Star Wars)
+    let base_title = details.title.or(details.name).unwrap_or_else(|| "Unknown".to_string());
+    let year = details.release_date.as_deref().or(details.first_air_date.as_deref())
+        .and_then(|d| d.split('-').next())
+        .unwrap_or("0000");
+    
+    let final_title = if metadata.season.is_none() {
+        format!("{} ({})", base_title, year)
+    } else {
+        base_title
+    };
+
     let summary = ollama.rewrite_summary(&details.overview.unwrap_or_default()).await?;
     db::update_media_item_full(&pool, item_id, tmdb_id, &final_title, summary, metadata.season.map(|s| s as i32), metadata.episode.map(|e| e as i32)).await?;
     
