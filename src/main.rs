@@ -281,6 +281,12 @@ pub async fn run_automation_cycle(pool: sqlx::SqlitePool, tmdb: TmdbClient, olla
     let profile = db::get_default_quality_profile(&pool).await.ok();
 
     info!("Automation: Starting cycle (Target: {:?})...", target_show_id);
+    
+    // Ensure we are logged in
+    if let Err(e) = qbit.login().await {
+        error!("Automation: Failed to log into qBittorrent: {:?}", e);
+        return Ok(());
+    }
 
     // 1. Sync metadata for all TV shows (only if no target, or target matches)
     if let Ok(tracked) = db::get_tracked_shows(&pool).await {

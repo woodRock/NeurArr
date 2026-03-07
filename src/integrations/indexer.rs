@@ -44,7 +44,7 @@ pub struct IndexerClient {
 
 impl IndexerClient {
     pub fn new() -> Result<Self> {
-        let base_url = env::var("INDEXER_URL").unwrap_or_else(|_| "http://localhost:9117/api/v2.0/indexers/all/results".to_string());
+        let base_url = env::var("INDEXER_URL").unwrap_or_else(|_| "http://localhost:9117/api/v2.0/indexers/all/results/torznab/".to_string());
         let api_key = env::var("INDEXER_API_KEY").unwrap_or_else(|_| "".to_string());
         
         Ok(Self {
@@ -62,9 +62,14 @@ impl IndexerClient {
             return Ok(vec![]);
         }
 
-        // Force JSON response from Jackett by adding t=search and format=json
-        // We use the base Jackett API URL structure
-        let url = format!("{}?apikey={}&Query={}&t=search&format=json", self.base_url, self.api_key, urlencoding::encode(query));
+        // Use Torznab-compatible parameters (t=search, q=query)
+        // This is much more reliable for automation tools than the native UI API
+        let url = if self.base_url.contains("torznab") {
+            format!("{}?apikey={}&t=search&q={}&format=json", self.base_url, self.api_key, urlencoding::encode(query))
+        } else {
+            format!("{}?apikey={}&Query={}&t=search&format=json", self.base_url, self.api_key, urlencoding::encode(query))
+        };
+
         info!("Requesting indexer search for: {}", query);
         
         let response = self.client.get(&url).send().await?;
