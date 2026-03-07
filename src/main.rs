@@ -622,7 +622,7 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
         } else {
             let meta = Parser::parse_regex(filename);
             let item_id = db::insert_media_item(&pool, filename, &meta).await?;
-            run_pipeline(item_id, path, pool, tmdb, ollama, Some(pending.tmdb_id as u32)).await?;
+            run_pipeline(item_id, path, pool, tmdb, ollama, Some(pending.tmdb_id as u32), Some(pending.media_type.clone())).await?;
         }
         return Ok(());
     }
@@ -636,8 +636,9 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
         if let Some(show) = local_show {
             let tmdb_id = show.tmdb_id as u32;
             let show_id = show.id;
-            info!("Ingest: Identified directory pack '{}' (Stage: Local)", filename);
-            let details = if metadata.season.is_some() { tmdb.get_tv_details(tmdb_id).await? } else { tmdb.get_movie_details(tmdb_id).await? };
+            let media_type = show.media_type.clone();
+            info!("Ingest: Identified directory pack '{}' (Stage: Local, Type: {})", filename, media_type);
+            let details = if media_type == "tv" { tmdb.get_tv_details(tmdb_id).await? } else { tmdb.get_movie_details(tmdb_id).await? };
 
             let base_title = details.title.or(details.name).unwrap_or_else(|| "Unknown".to_string());
             let year = details.release_date.as_deref().or(details.first_air_date.as_deref())
@@ -673,21 +674,25 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
             }
             let _ = tokio::fs::remove_dir_all(&path).await;
         }
-    }
- else if path.is_file() {
+    } else if path.is_file() {
         if !["mkv", "mp4", "avi", "mov"].contains(&path.extension().and_then(|e| e.to_str()).unwrap_or("")) { return Ok(()); }
         let metadata = Parser::parse_regex(filename);
         let item_id = db::insert_media_item(&pool, filename, &metadata).await?;
-        run_pipeline(item_id, path, pool, tmdb, ollama, None).await?;
+        if let Err(e) = run_pipeline(item_id, path, pool, tmdb, ollama, None, None).await {
+            error!("Ingest: Error processing {}: {:?}", filename, e);
+            return Err(e);
+        }
     }
     
     Ok(())
 }
 
-pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, force_tmdb_id: Option<u32>) -> Result<()> {
+pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, ollama: Arc<OllamaClient>, force_tmdb_id: Option<u32>, force_media_type: Option<String>) -> Result<()> {
     let filename = path.file_name().unwrap().to_str().unwrap();
     let metadata = Parser::parse_regex(filename);
     
+    let mut media_type = force_media_type.unwrap_or_else(|| if metadata.season.is_some() { "tv".to_string() } else { "movie".to_string() });
+
     let tmdb_id = if let Some(id) = force_tmdb_id { id } else {
         // --- STAGE 1: LOCAL (Database & Manual) ---
         if let Ok(Some(id)) = db::get_manual_match(&pool, &metadata.title).await { 
@@ -695,13 +700,14 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
             id as u32 
         } 
         else if let Ok(Some(show)) = db::get_tracked_show_by_title(&pool, &metadata.title, metadata.year.map(|y| y as i32)).await {
-            info!("Ingest [LOCAL]: Found collection match for '{}'", metadata.title);
+            info!("Ingest [LOCAL]: Found collection match for '{}' ({})", metadata.title, show.media_type);
+            media_type = if show.media_type == "tv" { "tv".to_string() } else { "movie".to_string() };
             show.tmdb_id as u32
         }
         else {
             // --- STAGE 2: TMDB (Exact/Heuristic Search) ---
             info!("Ingest [TMDB]: Searching for '{}'...", metadata.title);
-            let results = if metadata.season.is_some() { tmdb.search_tv(&metadata.title, None).await? } else { tmdb.search_movie(&metadata.title, None).await? };
+            let results = if media_type == "tv" { tmdb.search_tv(&metadata.title, None).await? } else { tmdb.search_movie(&metadata.title, None).await? };
             
             let best_match = results.iter().find(|res| {
                 let tmdb_title = res.title.clone().or(res.name.clone()).unwrap_or_default().to_lowercase().replace(|c: char| !c.is_alphanumeric(), "");
@@ -730,10 +736,12 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
             }
         }
     };
-    let details = if metadata.season.is_some() { tmdb.get_tv_details(tmdb_id).await? } else { tmdb.get_movie_details(tmdb_id).await? };
+
+    let details = if media_type == "tv" { tmdb.get_tv_details(tmdb_id).await? } else { tmdb.get_movie_details(tmdb_id).await? };
+    info!("Ingest: Fetched details for '{}'", details.title.clone().or(details.name.clone()).unwrap_or_default());
     
     // Prioritize title/name but append year for movies to prevent generic name collisions (like Star Wars)
-    let base_title = details.title.or(details.name).unwrap_or_else(|| "Unknown".to_string());
+    let base_title = details.title.clone().or(details.name.clone()).unwrap_or_else(|| "Unknown".to_string());
     let year = details.release_date.as_deref().or(details.first_air_date.as_deref())
         .and_then(|d| d.split('-').next())
         .unwrap_or("0000");
@@ -744,7 +752,10 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
         base_title
     };
 
+    info!("Ingest: Rewriting summary for '{}'...", final_title);
     let summary = ollama.rewrite_summary(&details.overview.unwrap_or_default()).await?;
+    info!("Ingest: Summary rewritten. Updating database...");
+    
     db::update_media_item_full(&pool, item_id, tmdb_id, &final_title, summary, metadata.season.map(|s| s as i32), metadata.episode.map(|e| e as i32)).await?;
     
     // Update episode/show status to completed
@@ -762,8 +773,10 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
         }
     }
 
+    info!("Ingest: Moving file to library...");
     let renamer = Renamer::new(env::var("NEURARR_LIBRARY_DIR")?);
     renamer.move_file(&path, &metadata, &final_title).await?;
+    info!("Ingest: Successfully moved '{}'", final_title);
     Ok(())
 }
 

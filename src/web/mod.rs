@@ -779,7 +779,7 @@ async fn match_media(State(state): State<AppState>, Path(id): Path<i64>, Json(re
         tokio::spawn(async move {
             if let Ok(Some(i)) = db::get_item_by_id(&p, tid).await {
                 let path = std::path::PathBuf::from("./ingest").join(&i.original_filename);
-                let _ = crate::run_pipeline(tid, path, p, t, o, Some(mid)).await;
+                let _ = crate::run_pipeline(tid, path, p, t, o, Some(mid), None).await;
             }
         });
     }
