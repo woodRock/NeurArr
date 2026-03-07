@@ -554,13 +554,11 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
     if path.is_dir() {
         // Try to match the directory name itself
         let metadata = Parser::parse_regex(filename);
-        let mut target_tmdb_id = None;
+        let local_show = db::get_tracked_show_by_title(&pool, &metadata.title).await.unwrap_or(None);
         
-        if let Ok(Some(show)) = db::get_tracked_show_by_title(&pool, &metadata.title).await {
-            target_tmdb_id = Some(show.tmdb_id as u32);
-        }
-
-        if let Some(tmdb_id) = target_tmdb_id {
+        if let Some(show) = local_show {
+            let tmdb_id = show.tmdb_id as u32;
+            let show_id = show.id;
             info!("Ingest: Identified directory pack '{}' (Stage: Local)", filename);
             let details = if metadata.season.is_some() { tmdb.get_tv_details(tmdb_id).await? } else { tmdb.get_movie_details(tmdb_id).await? };
             let final_title = details.name.or(details.title).unwrap_or_else(|| "Unknown".to_string());
@@ -574,9 +572,7 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
                         let item_id = db::insert_media_item(&pool, f, &meta).await?;
                         db::update_media_item_full(&pool, item_id, tmdb_id, &final_title, summary, meta.season.map(|s| s as i32), meta.episode.map(|e| e as i32)).await?;
                         if let (Some(s), Some(e)) = (meta.season, meta.episode) {
-                            if let Ok(Some(show)) = db::get_show_by_id(&pool, tmdb_id as i64).await { // This is slightly wrong as show_id != tmdb_id, fixing below
-                                let _ = db::update_episode_status_completed(&pool, show.id, s as i32, e as i32).await;
-                            }
+                            let _ = db::update_episode_status_completed(&pool, show_id, s as i32, e as i32).await;
                         }
                         let _ = Renamer::new(env::var("NEURARR_LIBRARY_DIR")?).move_file(entry.path(), &meta, &final_title).await;
                     }

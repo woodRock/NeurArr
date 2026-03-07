@@ -252,9 +252,18 @@ pub async fn get_tracked_show_by_title(pool: &SqlitePool, title: &str) -> Result
         let show_norm = show.title.to_lowercase().replace(|c: char| !c.is_alphanumeric() && !c.is_whitespace(), "");
         let show_words: Vec<_> = show_norm.split_whitespace().collect();
         
+        if show_words.is_empty() { continue; }
+
         // Match if ALL words from the database title are present in the filename
-        // This handles "Breaking Bad" matching "Breaking Bad Season 1 [1080p] [HEVC]"
-        if show_words.iter().all(|w| filename_words.contains(w)) {
+        // We also check word count to prevent "Mr" matching "Mister" incorrectly etc.
+        let mut match_count = 0;
+        for sw in &show_words {
+            if filename_words.contains(sw) {
+                match_count += 1;
+            }
+        }
+
+        if match_count == show_words.len() {
             return Ok(Some(show));
         }
     }
