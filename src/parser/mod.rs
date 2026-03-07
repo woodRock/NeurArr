@@ -5,6 +5,7 @@ use regex::Regex;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MediaMetadata {
     pub title: String,
+    pub year: Option<u32>,
     pub season: Option<u32>,
     pub episode: Option<u32>,
     pub resolution: Option<String>,
@@ -33,6 +34,7 @@ impl Parser {
         let mut resolution = None;
         let mut season = None;
         let mut episode = None;
+        let mut year = None;
 
         // 1. Extract resolution
         let res_re = Regex::new(r"(?i)(2160p|1080p|720p|480p)").unwrap();
@@ -47,7 +49,13 @@ impl Parser {
             episode = caps[2].parse().ok();
         }
 
-        // 3. Clean title: find the split point
+        // 3. Extract Year
+        let year_re = Regex::new(r"[\s\.\[\(]((19|20)\d{2})[\s\.\]\)]").unwrap();
+        if let Some(caps) = year_re.captures(filename) {
+            year = caps[1].parse().ok();
+        }
+
+        // 4. Clean title: find the split point
         let mut split_point = filename.len();
         
         // Find all tags: years, resolutions, or TV tags
@@ -86,6 +94,7 @@ impl Parser {
 
         MediaMetadata {
             title,
+            year,
             season,
             episode,
             resolution,

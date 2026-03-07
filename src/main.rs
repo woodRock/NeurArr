@@ -631,19 +631,19 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
     if path.is_dir() {
         // Try to match the directory name itself
         let metadata = Parser::parse_regex(filename);
-        let local_show = db::get_tracked_show_by_title(&pool, &metadata.title).await.unwrap_or(None);
-        
+        let local_show = db::get_tracked_show_by_title(&pool, &metadata.title, metadata.year.map(|y| y as i32)).await.unwrap_or(None);
+
         if let Some(show) = local_show {
             let tmdb_id = show.tmdb_id as u32;
             let show_id = show.id;
             info!("Ingest: Identified directory pack '{}' (Stage: Local)", filename);
             let details = if metadata.season.is_some() { tmdb.get_tv_details(tmdb_id).await? } else { tmdb.get_movie_details(tmdb_id).await? };
-            
+
             let base_title = details.title.or(details.name).unwrap_or_else(|| "Unknown".to_string());
             let year = details.release_date.as_deref().or(details.first_air_date.as_deref())
                 .and_then(|d| d.split('-').next())
                 .unwrap_or("0000");
-            
+
             let final_title = if metadata.season.is_none() {
                 format!("{} ({})", base_title, year)
             } else {
@@ -653,7 +653,9 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
             for entry in WalkDir::new(&path).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_file() {
                     let f = entry.path().file_name().and_then(|s| s.to_str()).unwrap_or("");
-                    if ["mkv", "mp4", "avi", "mov"].contains(&entry.path().extension().and_then(|e| e.to_str()).unwrap_or("")) {
+                    let ext = entry.path().extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+                    if ["mkv", "mp4", "avi", "mov"].contains(&ext.as_str()) {
                         let meta = Parser::parse_regex(f);
                         let summary = ollama.rewrite_summary(&details.overview.as_deref().unwrap_or_default()).await.unwrap_or_default();
                         let item_id = db::insert_media_item(&pool, f, &meta).await?;
@@ -662,12 +664,17 @@ async fn process_file(path: PathBuf, pool: sqlx::SqlitePool, tmdb: TmdbClient, o
                             let _ = db::update_episode_status_completed(&pool, show_id, s as i32, e as i32).await;
                         }
                         let _ = Renamer::new(env::var("NEURARR_LIBRARY_DIR")?).move_file(entry.path(), &meta, &final_title).await;
+                    } else if ["srt", "ass", "vtt"].contains(&ext.as_str()) {
+                        // Move subtitle files too
+                        let meta = Parser::parse_regex(f);
+                        let _ = Renamer::new(env::var("NEURARR_LIBRARY_DIR")?).move_file(entry.path(), &meta, &final_title).await;
                     }
                 }
             }
             let _ = tokio::fs::remove_dir_all(&path).await;
         }
-    } else if path.is_file() {
+    }
+ else if path.is_file() {
         if !["mkv", "mp4", "avi", "mov"].contains(&path.extension().and_then(|e| e.to_str()).unwrap_or("")) { return Ok(()); }
         let metadata = Parser::parse_regex(filename);
         let item_id = db::insert_media_item(&pool, filename, &metadata).await?;
@@ -687,7 +694,7 @@ pub async fn run_pipeline(item_id: i64, path: PathBuf, pool: sqlx::SqlitePool, t
             info!("Ingest [LOCAL]: Found manual match for '{}'", metadata.title);
             id as u32 
         } 
-        else if let Ok(Some(show)) = db::get_tracked_show_by_title(&pool, &metadata.title).await {
+        else if let Ok(Some(show)) = db::get_tracked_show_by_title(&pool, &metadata.title, metadata.year.map(|y| y as i32)).await {
             info!("Ingest [LOCAL]: Found collection match for '{}'", metadata.title);
             show.tmdb_id as u32
         }

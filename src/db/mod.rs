@@ -243,19 +243,20 @@ pub async fn get_wanted_movies(pool: &SqlitePool) -> Result<Vec<TrackedShow>> {
     Ok(sqlx::query_as::<_, TrackedShow>("SELECT * FROM tracked_shows WHERE media_type = 'movie' AND status = 'wanted' ORDER BY last_updated DESC").fetch_all(pool).await?)
 }
 
-pub async fn get_tracked_show_by_title(pool: &SqlitePool, title: &str) -> Result<Option<TrackedShow>> {
+pub async fn get_tracked_show_by_title(pool: &SqlitePool, title: &str, year: Option<i32>) -> Result<Option<TrackedShow>> {
     let filename_norm = title.to_lowercase().replace(|c: char| !c.is_alphanumeric() && !c.is_whitespace(), "");
     let filename_words: std::collections::HashSet<_> = filename_norm.split_whitespace().collect();
     
     let tracked = get_tracked_shows(pool).await?;
+    let mut best_match: Option<TrackedShow> = None;
+    let mut max_match_words = 0;
+
     for show in tracked {
         let show_norm = show.title.to_lowercase().replace(|c: char| !c.is_alphanumeric() && !c.is_whitespace(), "");
         let show_words: Vec<_> = show_norm.split_whitespace().collect();
         
         if show_words.is_empty() { continue; }
 
-        // Match if ALL words from the database title are present in the filename
-        // We also check word count to prevent "Mr" matching "Mister" incorrectly etc.
         let mut match_count = 0;
         for sw in &show_words {
             if filename_words.contains(sw) {
@@ -263,11 +264,23 @@ pub async fn get_tracked_show_by_title(pool: &SqlitePool, title: &str) -> Result
             }
         }
 
+        // Must match ALL words of the title
         if match_count == show_words.len() {
-            return Ok(Some(show));
+            // If year is provided in filename, it MUST match the database year
+            if let Some(f_year) = year {
+                if let Some(s_year) = show.year {
+                    if f_year != s_year { continue; }
+                }
+            }
+
+            // Prefer the most specific match (e.g. "Star Wars Episode I" over "Star Wars")
+            if show_words.len() > max_match_words {
+                max_match_words = show_words.len();
+                best_match = Some(show);
+            }
         }
     }
-    Ok(None)
+    Ok(best_match)
 }
 
 pub async fn update_episode_status_completed(pool: &SqlitePool, show_id: i64, season: i32, episode: i32) -> Result<()> {
